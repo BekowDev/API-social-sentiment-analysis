@@ -4,8 +4,6 @@ import adminController from '../controllers/admin.controller.js'
 
 const router = new Router()
 
-// Только тот, у кого уже есть роль 'admin' (твой главный админ),
-// сможет вызвать этот роут и передать ID другого юзера
 router.post(
     '/promote',
     authMiddleware,

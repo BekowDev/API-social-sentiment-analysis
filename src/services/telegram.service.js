@@ -3,10 +3,9 @@ import { StringSession } from 'telegram/sessions/index.js'
 
 class TelegramService {
     constructor() {
-        // Твои рабочие ключи
-
-        this.apiId = 38264239
-        this.apiHash = 'ac2baae55001d41f245b8f0f41140eea'
+        // Твои рабочие ключи API от Telegram
+        this.apiId = process.env.TG_API_ID
+        this.apiHash = process.env.TG_API_HASH
     }
 
     async createClient(sessionStr = '') {

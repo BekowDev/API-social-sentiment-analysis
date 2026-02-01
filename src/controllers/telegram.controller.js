@@ -1,5 +1,5 @@
 import { Api } from 'telegram' // ОБЯЗАТЕЛЬНО ДОБАВЬ ЭТУ СТРОКУ
-import telegramService from '../services/social/telegram.service.js'
+import telegramService from '../services/telegram.service.js'
 import Social from '../models/Social.js'
 
 // Храним данные сессии в памяти (пока сервер запущен)
@@ -9,6 +9,7 @@ class TelegramController {
     async sendCode(req, res) {
         try {
             const { phoneNumber } = req.body
+
             const client = await telegramService.createClient('')
 
             await client.connect()
@@ -42,15 +43,13 @@ class TelegramController {
 
             if (!data) {
                 return res.status(400).json({
-                    message:
-                        'Сессия не найдена. Запросите код заново (сервер мог перезагрузиться).',
+                    message: 'Сессия не найдена. Запросите код заново.',
                 })
             }
 
             const { phoneCodeHash, client } = data
 
-            // Используем прямой вызов API через Api.auth.SignIn
-            // Это самый надежный способ в GramJS
+            // Входим в Telegram
             await client.invoke(
                 new Api.auth.SignIn({
                     phoneNumber: phoneNumber,
@@ -59,17 +58,32 @@ class TelegramController {
                 }),
             )
 
-            // Генерируем строку сессии
             const sessionString = client.session.save()
+            let socialAccount // Создаем переменную для ответа
 
-            // Сохраняем в базу данных
-            const socialAccount = await Social.create({
-                userId: req.user?.id || null,
+            // 1. Ищем существующий аккаунт
+            socialAccount = await Social.findOne({
+                userId: req.user.id,
                 platform: 'telegram',
-                accountName: phoneNumber,
-                credentials: { session: sessionString },
-                type: 'user_session',
             })
+
+            if (socialAccount) {
+                // 2. ОБНОВЛЯЕМ (если нашли)
+                socialAccount.accountName = phoneNumber
+                socialAccount.credentials = { session: sessionString }
+                await socialAccount.save()
+                console.log(`Аккаунт обновлен: ${phoneNumber}`)
+            } else {
+                // 3. СОЗДАЕМ (если не нашли)
+                socialAccount = await Social.create({
+                    userId: req.user.id,
+                    platform: 'telegram',
+                    accountName: phoneNumber,
+                    credentials: { session: sessionString },
+                    type: 'user_session',
+                })
+                console.log(`Создан новый аккаунт: ${phoneNumber}`)
+            }
 
             // Чистим временную память
             sessionData.delete(phoneNumber)
