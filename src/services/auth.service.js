@@ -22,7 +22,7 @@ class AuthService {
         const user = await User.findOne({ email })
         if (!user) throw new Error('Пользователь не найден')
 
-        // ПРОВЕРКА НА БАН — Прямо здесь в сервисе
+        // ПРОВЕРКА НА БАН
         if (user.isBanned) {
             throw new Error(
                 'Ваш аккаунт заблокирован. Обратитесь к администратору.',
@@ -44,7 +44,7 @@ class AuthService {
                 nonce: Math.random().toString(36).substring(7),
             },
             process.env.JWT_SECRET,
-            { expiresIn: '24h' },
+            { expiresIn: '7d' },
         )
     }
 }
