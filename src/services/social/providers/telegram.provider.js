@@ -116,36 +116,69 @@ class TelegramProvider extends BaseSocialProvider {
         console.log(`📥 Telegram: Качаем комменты с ${link}`);
 
         const parts = link.split('/');
-        const messageId = parseInt(parts.pop());
+        // Обработка разных форматов ссылок (иногда в конце бывает слэш)
+        const messageId = parseInt(parts.pop() || parts.pop());
         const channelName = parts.pop();
 
         const comments = [];
 
+        // Используем итератор для обхода сообщений
         for await (const message of this.client.iterMessages(channelName, {
             replyTo: messageId,
             limit: undefined,
         })) {
-            let contentText = message.text || '';
+            let contentText = message.text || ''; // Берем текст, если есть (например, подпись к фото)
+
+            // --- НОВАЯ ЛОГИКА ДЛЯ СТИКЕРОВ ---
+            if (message.sticker) {
+                let emoji = '';
+
+                // Проверяем атрибуты стикера
+                if (message.sticker.attributes) {
+                    const stickerAttr = message.sticker.attributes.find(
+                        (attr) => attr.className === 'DocumentAttributeSticker',
+                    );
+
+                    // Если нашли атрибут и в нем есть эмодзи (alt)
+                    if (stickerAttr && stickerAttr.alt) {
+                        emoji = stickerAttr.alt;
+                    }
+                }
+
+                // Добавляем эмодзи к тексту. ИИ поймет смайлик лучше, чем слово "Стикер"
+                // Результат будет: "[Стикер] 😂" или просто "😂"
+                contentText = `${contentText} [Стикер] ${emoji}`.trim();
+            }
+            // ----------------------------------
+
+            // Если после проверки стикера текста всё еще нет, проверяем остальные медиа
             if (!contentText) {
-                if (message.sticker) contentText = '[Стикер]';
-                else if (message.photo) contentText = '[Фотография]';
+                if (message.photo) contentText = '[Фотография]';
                 else if (message.video) contentText = '[Видео]';
                 else if (message.voice) contentText = '[Голосовое]';
-                else contentText = '[Медиа]';
+                else if (message.media) contentText = '[Медиа]';
             }
 
+            // Получение автора (оставляем твою логику, она хорошая)
             let authorName = 'Неизвестный';
             let username = null;
 
             try {
                 const sender = await message.getSender();
                 if (sender) {
-                    authorName =
-                        `${sender.firstName || ''} ${sender.lastName || ''}`.trim();
+                    // Проверка на удаленный аккаунт или канал
+                    const firstName = sender.firstName || '';
+                    const lastName = sender.lastName || '';
+                    const title = sender.title || ''; // Если пишет канал
+
+                    authorName = `${firstName} ${lastName} ${title}`.trim();
                     username = sender.username ? `@${sender.username}` : null;
+
                     if (!authorName) authorName = 'Скрытый аккаунт';
                 }
-            } catch (e) {}
+            } catch (e) {
+                // Игнорируем ошибки получения сендера
+            }
 
             comments.push({
                 comment_id: message.id,
@@ -157,6 +190,59 @@ class TelegramProvider extends BaseSocialProvider {
         }
 
         return comments;
+    }
+
+    async getPostReactions(postLink) {
+        try {
+            // 1. ОБЯЗАТЕЛЬНО ПОДКЛЮЧАЕМСЯ ПЕРЕД ЗАПРОСОМ
+            await this.connect(); // <--- ДОБАВЬ ЭТУ СТРОКУ
+
+            console.log('🔍 Пытаюсь получить реакции для:', postLink);
+
+            const parts = postLink.split('/');
+            const postId = parseInt(parts[parts.length - 1]);
+            const channelName = parts[parts.length - 2];
+
+            if (isNaN(postId) || !channelName) {
+                console.log('❌ Ошибка парсинга ссылки');
+                return [];
+            }
+
+            // Теперь запрос точно сработает
+            const result = await this.client.getMessages(channelName, {
+                ids: [postId],
+            });
+
+            if (!result || result.length === 0) {
+                return [];
+            }
+
+            const post = result[0];
+
+            if (!post.reactions || !post.reactions.results) {
+                return [];
+            }
+
+            // Маппинг реакций
+            const reactions = post.reactions.results.map((r) => {
+                let emoji = '⭐'; // Заглушка для премиум стикеров
+
+                // Проверяем тип реакции
+                if (r.reaction.className === 'ReactionEmoji') {
+                    emoji = r.reaction.emoticon;
+                }
+
+                return {
+                    emoji: emoji,
+                    count: r.count,
+                };
+            });
+
+            return reactions;
+        } catch (e) {
+            console.error('❌ Ошибка при получении реакций:', e);
+            return [];
+        }
     }
 }
 

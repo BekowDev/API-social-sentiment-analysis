@@ -58,14 +58,24 @@ class SocialController {
             if (!account)
                 return res.status(401).json({ message: 'Аккаунт не найден' });
 
-            // 2. Скачивание
+            // 2. Инициализация провайдера
             const provider = SocialFactory.getProvider(
                 platform,
                 account.credentials,
             );
-            console.log('Скачиваю комментарии...');
-            const rawComments = await provider.getComments(postLink);
-            console.log(`Скачано сообщений: ${rawComments.length}`);
+
+            // --- ИЗМЕНЕНИЕ: Скачиваем И комментарии, И реакции параллельно ---
+            console.log('Скачиваю комментарии и реакции...');
+
+            // Используем Promise.all, чтобы не ждать по очереди
+            const [rawComments, reactions] = await Promise.all([
+                provider.getComments(postLink), // Твой метод для комментов
+                provider.getPostReactions(postLink), // Твой новый метод для реакций
+            ]);
+
+            console.log(
+                `Скачано: ${rawComments.length} сообщений, ${reactions.length} типов реакций`,
+            );
 
             // 3. ПАКЕТНАЯ ОБРАБОТКА (BATCHING)
             const BATCH_SIZE = 20;
@@ -84,7 +94,7 @@ class SocialController {
             const finalComments = rawComments.map((comment, index) => {
                 const ai = aiResults[index];
 
-                // <--- 2. ВАЖНО: Логика определения токсичности
+                // Логика определения токсичности
                 let isToxic = false;
                 if (ai) {
                     if (ai.is_toxic === true) isToxic = true;
@@ -99,7 +109,7 @@ class SocialController {
                         ? {
                               sentiment: ai.sentiment,
                               score: ai.score,
-                              is_toxic: isToxic, // Используем вычисленное значение
+                              is_toxic: isToxic,
                               lang: ai.language,
                           }
                         : { sentiment: 'neutral', score: 0.5, is_toxic: false },
@@ -125,7 +135,7 @@ class SocialController {
 
             // 6. Подсчет времени и Сохранение
             const endTime = Date.now();
-            const duration = endTime - startTime; // Теперь startTime существует, ошибки не будет
+            const duration = endTime - startTime;
 
             const newAnalysis = new Analysis({
                 userId: req.user.id,
@@ -135,6 +145,7 @@ class SocialController {
                 stats,
                 comments: finalComments,
                 executionTime: duration,
+                reactions: reactions, // <--- ВАЖНО: Добавили реакции при сохранении
             });
 
             await newAnalysis.save();
