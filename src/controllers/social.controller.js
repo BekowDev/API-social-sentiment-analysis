@@ -1,10 +1,10 @@
-import SocialAccount from '../models/Social.js'; // Проверь путь к файлу модели!
+import SocialAccount from '../models/Social.js';
 import Analysis from '../models/Analysis.js';
 import SocialFactory from '../services/social/social.factory.js';
 import aiService from '../services/ai.service.js';
 
 class SocialController {
-    // 1. Отправка кода
+    // --- 1. Отправка кода ---
     async sendCode(req, res, next) {
         try {
             const { phoneNumber, platform = 'telegram' } = req.body;
@@ -16,7 +16,7 @@ class SocialController {
         }
     }
 
-    // 2. Верификация кода
+    // --- 2. Верификация ---
     async verifyCode(req, res, next) {
         try {
             const {
@@ -30,25 +30,28 @@ class SocialController {
 
             await SocialAccount.findOneAndUpdate(
                 { userId: req.user.id, platform },
-                { accountName: phoneNumber, credentials: session },
-                { upsert: true, new: true },
+                {
+                    accountName: phoneNumber,
+                    credentials: session,
+                    status: 'active',
+                },
+                { upsert: true, new: true }
             );
 
-            res.json({ success: true });
+            res.json({ success: true, message: 'Успешный вход' });
         } catch (e) {
             next(e);
         }
     }
 
-    // 3. АНАЛИЗ ПОСТА (ИСПРАВЛЕННЫЙ)
+    // --- 3. АНАЛИЗ (TURBO MODE ⚡) ---
     async analyzePost(req, res, next) {
-        // <--- 1. ВАЖНО: Объявляем таймер в самом начале
         const startTime = Date.now();
 
         try {
             const { phoneNumber, postLink, platform = 'telegram' } = req.body;
 
-            // 1. Получаем аккаунт
+            // 1. Поиск аккаунта
             const account = await SocialAccount.findOne({
                 userId: req.user.id,
                 accountName: phoneNumber,
@@ -58,85 +61,89 @@ class SocialController {
             if (!account)
                 return res.status(401).json({ message: 'Аккаунт не найден' });
 
-            // 2. Инициализация провайдера
             const provider = SocialFactory.getProvider(
                 platform,
-                account.credentials,
+                account.credentials
             );
 
-            // --- ИЗМЕНЕНИЕ: Скачиваем И комментарии, И реакции параллельно ---
-            console.log('Скачиваю комментарии и реакции...');
+            console.log('🚀 Старт анализа...');
 
-            // Используем Promise.all, чтобы не ждать по очереди
-            const [rawComments, reactions] = await Promise.all([
-                provider.getComments(postLink), // Твой метод для комментов
-                provider.getPostReactions(postLink), // Твой новый метод для реакций
+            // 2. Параллельное скачивание (Медиа + Комменты + Реакции)
+            const [postMedia, rawComments, reactions] = await Promise.all([
+                provider.getPostMedia(postLink),
+                provider.getComments(postLink),
+                provider.getPostReactions(postLink),
             ]);
 
             console.log(
-                `Скачано: ${rawComments.length} сообщений, ${reactions.length} типов реакций`,
+                `📥 Скачано: ${rawComments.length} комментов. Получаю контекст...`
             );
 
-            // 3. ПАКЕТНАЯ ОБРАБОТКА (BATCHING)
-            const BATCH_SIZE = 20;
-            const aiResults = [];
+            // 3. Контекст поста (1 раз)
+            const contextSummary =
+                await aiService.getPostContextSummary(postMedia);
 
+            // 4. ОПТИМИЗАЦИЯ: Разбиваем на мелкие пачки по 15 штук
+            const BATCH_SIZE = 15;
+            const batches = [];
             for (let i = 0; i < rawComments.length; i += BATCH_SIZE) {
-                const batch = rawComments.slice(i, i + BATCH_SIZE);
-                console.log(`Анализирую партию ${i} - ${i + BATCH_SIZE}...`);
-                const batchResult = await aiService.analyzeComments(batch);
-                if (batchResult) {
-                    aiResults.push(...batchResult);
-                }
+                batches.push(rawComments.slice(i, i + BATCH_SIZE));
             }
 
-            // 4. Объединение результатов + УМНАЯ ТОКСИЧНОСТЬ
-            const finalComments = rawComments.map((comment, index) => {
-                const ai = aiResults[index];
+            console.log(`⚡ Запуск ${batches.length} потоков параллельно...`);
 
-                // Логика определения токсичности
-                let isToxic = false;
-                if (ai) {
-                    if (ai.is_toxic === true) isToxic = true;
-                    // Если негатив > 80%, тоже считаем токсичным
-                    else if (ai.sentiment === 'negative' && ai.score > 0.8)
-                        isToxic = true;
-                }
+            // 5. ПАРАЛЛЕЛЬНЫЙ ЗАПУСК
+            const aiPromises = batches.map(async (batch, index) => {
+                // Небольшая задержка (20мс), чтобы не "положить" сеть мгновенным ударом
+                await new Promise((r) => setTimeout(r, index * 20));
+                return aiService.analyzeComments(batch, contextSummary);
+            });
+
+            // Ждем выполнения всех потоков сразу
+            const resultsArrays = await Promise.all(aiPromises);
+            const aiResults = resultsArrays.flat();
+
+            console.log('✅ AI завершил работу. Сборка данных...');
+
+            // 6. Объединение результатов
+            const finalComments = rawComments.map((comment, index) => {
+                const ai = aiResults[index] || {};
 
                 return {
                     ...comment,
-                    analysis: ai
-                        ? {
-                              sentiment: ai.sentiment,
-                              score: ai.score,
-                              is_toxic: isToxic,
-                              lang: ai.language,
-                          }
-                        : { sentiment: 'neutral', score: 0.5, is_toxic: false },
+                    analysis: {
+                        sentiment: ai.sentiment || 'neutral',
+                        score: ai.score || 0.5,
+                        is_toxic: ai.is_toxic || false,
+                        is_sarcastic: ai.is_sarcastic || false,
+                        emotion: ai.emotion || 'neutral',
+                        explanation: ai.explanation || '',
+                    },
                 };
             });
 
-            // 5. Статистика
+            // 7. Статистика
             const stats = {
                 total: finalComments.length,
                 positive: finalComments.filter(
-                    (c) => c.analysis?.sentiment === 'positive',
+                    (c) => c.analysis.sentiment === 'positive'
                 ).length,
                 negative: finalComments.filter(
-                    (c) => c.analysis?.sentiment === 'negative',
+                    (c) => c.analysis.sentiment === 'negative'
                 ).length,
                 neutral: finalComments.filter(
-                    (c) => c.analysis?.sentiment === 'neutral',
+                    (c) => c.analysis.sentiment === 'neutral'
                 ).length,
-                toxic: finalComments.filter(
-                    (c) => c.analysis?.is_toxic === true,
+                toxic: finalComments.filter((c) => c.analysis.is_toxic === true)
+                    .length,
+                sarcastic: finalComments.filter(
+                    (c) => c.analysis.is_sarcastic === true
                 ).length,
             };
 
-            // 6. Подсчет времени и Сохранение
-            const endTime = Date.now();
-            const duration = endTime - startTime;
+            const duration = Date.now() - startTime;
 
+            // 8. Сохранение
             const newAnalysis = new Analysis({
                 userId: req.user.id,
                 platform,
@@ -144,44 +151,44 @@ class SocialController {
                 phoneNumber,
                 stats,
                 comments: finalComments,
+                reactions,
                 executionTime: duration,
-                reactions: reactions, // <--- ВАЖНО: Добавили реакции при сохранении
+                postSummary: contextSummary,
             });
 
             await newAnalysis.save();
 
-            console.log(`Анализ завершен за ${duration}мс`);
+            console.log(`🏁 Готово за ${(duration / 1000).toFixed(2)} сек`);
             res.json(newAnalysis);
         } catch (e) {
-            console.error('Ошибка анализа:', e);
-            res.status(500).json({ message: 'Ошибка анализа: ' + e.message });
+            console.error('❌ Ошибка:', e);
+            res.status(500).json({ message: e.message });
         }
     }
 
-    // 4. Получение истории
+    // --- 4. История ---
     async getHistory(req, res, next) {
         try {
             const history = await Analysis.find({ userId: req.user.id })
                 .sort({ createdAt: -1 })
-                // <--- 3. ВАЖНО: Добавили executionTime в выборку
-                .select('postLink stats createdAt platform executionTime');
+                .select(
+                    'postLink stats createdAt platform executionTime postSummary'
+                );
             res.json(history);
         } catch (e) {
             next(e);
         }
     }
 
-    // 5. Получение деталей
+    // --- 5. Детали ---
     async getAnalysisById(req, res, next) {
         try {
             const analysis = await Analysis.findOne({
                 _id: req.params.id,
                 userId: req.user.id,
             });
-
-            if (!analysis) {
+            if (!analysis)
                 return res.status(404).json({ message: 'Анализ не найден' });
-            }
             res.json(analysis);
         } catch (e) {
             next(e);
