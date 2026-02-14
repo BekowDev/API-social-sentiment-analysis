@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose'
+import { Schema, model } from 'mongoose';
 
 const UserSchema = new Schema({
     email: {
@@ -19,6 +19,6 @@ const UserSchema = new Schema({
         type: Boolean,
         default: false,
     },
-})
+});
 
-export default model('User', UserSchema)
+export default model('User', UserSchema);

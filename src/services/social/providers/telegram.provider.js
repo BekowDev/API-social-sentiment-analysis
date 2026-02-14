@@ -12,12 +12,8 @@ class TelegramProvider extends BaseSocialProvider {
         this.apiHash = config.telegram.apiHash;
         this.client = null;
     }
-
-    // --- 1. Подключение (с кешированием) ---
     async connect() {
         const sessionStr = this.credentials.session || '';
-
-        // Проверяем кеш
         if (clientCache.has(sessionStr)) {
             const cached = clientCache.get(sessionStr);
             if (cached.connected) {
@@ -25,8 +21,7 @@ class TelegramProvider extends BaseSocialProvider {
                 return;
             }
         }
-
-        console.log('🔄 Telegram: Подключение...');
+        console.log('Telegram: Подключение...');
         this.client = new TelegramClient(
             new StringSession(sessionStr),
             this.apiId,
@@ -37,14 +32,9 @@ class TelegramProvider extends BaseSocialProvider {
                 deviceModel: 'SocialAnalyzer_Pro',
             }
         );
-
         await this.client.connect();
         clientCache.set(sessionStr, this.client);
     }
-
-    // --- 2. Получение комментариев (ВОССТАНОВЛЕНО) ---
-    // src/services/social/providers/telegram.provider.js
-
     async getComments(postLink) {
         await this.connect();
         try {
@@ -63,21 +53,14 @@ class TelegramProvider extends BaseSocialProvider {
             // 👇 ИЗМЕНЕНИЕ ЗДЕСЬ 👇
             const commentsParams = {
                 replyTo: post.id,
-                // limit: 100,      <-- БЫЛО (ограничение 100)
-                limit: undefined, // <-- СТАЛО (undefined = скачать ВСЕ комментарии без лимита)
-                // Или поставь limit: 3000, если боишься зависаний на миллионных каналах
+                limit: undefined,
             };
-
-            console.log(`📥 Скачиваю все комментарии...`);
-
-            // GramJS сам будет подгружать их, это может занять пару секунд
+            console.log(`Скачиваю все комментарии...`);
             const result = await this.client.getMessages(
                 channelName,
                 commentsParams
             );
-
-            console.log(`✅ Получено ${result.length} комментариев`);
-
+            console.log(`Получено ${result.length} комментариев`);
             return result.map((msg) => {
                 let authorName = 'User';
                 if (msg.sender) {
@@ -85,7 +68,6 @@ class TelegramProvider extends BaseSocialProvider {
                         ? `${msg.sender.firstName} ${msg.sender.lastName || ''}`.trim()
                         : msg.sender.username || 'User';
                 }
-
                 return {
                     comment_id: msg.id,
                     author_name: authorName,
@@ -98,15 +80,12 @@ class TelegramProvider extends BaseSocialProvider {
             return [];
         }
     }
-
-    // --- 3. Получение реакций (ВОССТАНОВЛЕНО) ---
     async getPostReactions(postLink) {
         await this.connect();
         try {
             const parts = postLink.split('/');
             const postId = parseInt(parts[parts.length - 1]);
             const channelName = parts[parts.length - 2];
-
             const result = await this.client.getMessages(channelName, {
                 ids: [postId],
             });
@@ -115,15 +94,12 @@ class TelegramProvider extends BaseSocialProvider {
             if (!post || !post.reactions || !post.reactions.results) {
                 return [];
             }
-
             return post.reactions.results.map((r) => {
-                let emoji = '⭐'; // Дефолт
-                if (r.reaction.className === 'ReactionEmoji') {
+                let emoji = 'Дефолт';
+                if (r.reaction.className === 'ReactionEmoji')
                     emoji = r.reaction.emoticon;
-                } else if (r.reaction.className === 'ReactionCustomEmoji') {
-                    emoji = '🎭'; // Кастомный эмодзи
-                }
-
+                else if (r.reaction.className === 'ReactionCustomEmoji')
+                    emoji = 'Кастомный эмодзи';
                 return {
                     emoji: emoji,
                     count: r.count,
@@ -134,15 +110,12 @@ class TelegramProvider extends BaseSocialProvider {
             return [];
         }
     }
-
-    // --- 4. Получение медиа (НОВОЕ, ОПТИМИЗИРОВАННОЕ) ---
     async getPostMedia(postLink) {
         await this.connect();
         try {
             const parts = postLink.split('/');
             const postId = parseInt(parts[parts.length - 1]);
             const channelName = parts[parts.length - 2];
-
             const messages = await this.client.getMessages(channelName, {
                 ids: [postId],
             });
@@ -154,24 +127,17 @@ class TelegramProvider extends BaseSocialProvider {
             let mimeType = null;
 
             if (post.media) {
-                // 🚀 ОПТИМИЗАЦИЯ: Качаем превью (thumb: 1)
                 buffer = await this.client.downloadMedia(post.media, {
                     thumb: 1,
                 });
 
-                // Если превью нет, качаем оригинал (для фото)
-                if (!buffer || buffer.length === 0) {
+                if (!buffer || buffer.length === 0)
                     buffer = await this.client.downloadMedia(post.media);
-                }
 
-                // Упрощенная проверка типа
-                if (post.media.className === 'MessageMediaPhoto') {
+                if (post.media.className === 'MessageMediaPhoto')
                     mimeType = 'image/jpeg';
-                } else {
-                    mimeType = 'image/jpeg'; // Для видео превью тоже будет картинкой
-                }
+                else mimeType = 'image/jpeg';
             }
-
             return {
                 buffer: buffer ? buffer.toString('base64') : null,
                 mimeType: mimeType,
@@ -183,7 +149,6 @@ class TelegramProvider extends BaseSocialProvider {
         }
     }
 
-    // --- 5. Авторизация (Оставляем как было) ---
     async sendCode(phoneNumber) {
         await this.connect();
         const result = await this.client.sendCode(
@@ -197,21 +162,12 @@ class TelegramProvider extends BaseSocialProvider {
         await this.connect();
         const params = {
             phoneNumber: phoneNumber,
-            phoneCodeHash: code.phoneCodeHash, // Если клиент передает хеш, используйте его
-            phoneCode: code, // Если вы передаете просто код строкой
+            phoneCodeHash: code.phoneCodeHash,
+            phoneCode: code,
             onError: (err) => console.log(err),
         };
-
-        // Маленький хак для gramjs: если передан просто код строкой
-        if (typeof code === 'string') {
-            params.phoneCode = code;
-            // В реальном проекте хеш лучше хранить на фронте или в сессии,
-            // но gramjs часто умеет сам подхватывать контекст
-        }
-
-        if (password) {
-            params.password = password;
-        }
+        if (typeof code === 'string') params.phoneCode = code;
+        if (password) params.password = password;
 
         await this.client.start(params);
         return this.client.session.save();

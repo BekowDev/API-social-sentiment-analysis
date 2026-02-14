@@ -1,29 +1,20 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import dotenv from 'dotenv';
-dotenv.config();
 
 class AIService {
     constructor() {
         const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) throw new Error('❌ API Key для Gemini не найден в .env');
-
+        if (!apiKey) throw new Error('API Key для Gemini не найден в .env');
         this.genAI = new GoogleGenerativeAI(apiKey);
-
-        // Используем быструю и умную модель
         this.model = this.genAI.getGenerativeModel({
-            model: 'gemini-3-flash-preview',
+            model: process.env.GEMINI_MODEL,
             generationConfig: { responseMimeType: 'application/json' },
         });
     }
-
-    // --- ШАГ 1: Контекст ---
     async getPostContextSummary(postMedia) {
         try {
             if (!postMedia.buffer)
                 return postMedia.text || 'Контекст отсутствует';
-
             const postText = postMedia.text || 'Текста нет, только медиа';
-
             const promptParts = [
                 {
                     text: `Проанализируй медиа и текст: "${postText}". Верни JSON: { "summary": "Краткое описание происходящего и настроения. Есть ли ирония?" }`,
@@ -35,7 +26,6 @@ class AIService {
                     },
                 },
             ];
-
             const result = await this.model.generateContent(promptParts);
             const json = JSON.parse(result.response.text());
             return json.summary || 'Описание не получено';
@@ -44,16 +34,12 @@ class AIService {
             return postMedia.text || '';
         }
     }
-
-    // --- ШАГ 2: Анализ с УЧЕТОМ ЭКСПРЕССИИ ---
     async analyzeComments(commentsList, contextSummary) {
         try {
             const texts = commentsList
                 .map((c) => c.content)
                 .filter((t) => t && t.trim().length > 0);
-
             if (texts.length === 0) return [];
-
             const prompt = `
                 Ты — эксперт по анализу живого русского языка в Telegram.
                 КОНТЕКСТ ПОСТА: "${contextSummary}"
@@ -90,17 +76,14 @@ class AIService {
                     }
                 ]
             `;
-
             const result = await this.model.generateContent(prompt);
             const response = await result.response;
-
             let cleanText = response
                 .text()
                 .replace(/```json/g, '')
                 .replace(/```/g, '')
                 .trim();
             const data = JSON.parse(cleanText);
-
             return Array.isArray(data) ? data : [];
         } catch (e) {
             console.error('Analysis Error:', e.message);

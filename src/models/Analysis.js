@@ -1,14 +1,12 @@
 import mongoose from 'mongoose';
 
-// 1. Создадим схему для одного комментария, чтобы ничего не терялось
 const CommentSchema = new mongoose.Schema(
     {
         comment_id: { type: Number },
         author_name: { type: String },
         content: { type: String },
 
-        // 👇👇👇 ВОТ ЭТОГО НЕ ХВАТАЛО! 👇👇👇
-        date: { type: Number }, // Храним дату как число (Timestamp)
+        date: { type: Number },
 
         analysis: {
             sentiment: { type: String },
@@ -17,10 +15,9 @@ const CommentSchema = new mongoose.Schema(
             lang: { type: String },
         },
     },
-    { _id: false },
-); // _id для под-документов не обязателен
+    { _id: false }
+);
 
-// 2. Основная схема
 const AnalysisSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -31,7 +28,6 @@ const AnalysisSchema = new mongoose.Schema({
     phoneNumber: { type: String },
     postLink: { type: String },
 
-    // Статистика
     stats: {
         total: { type: Number, default: 0 },
         positive: { type: Number, default: 0 },
@@ -40,7 +36,6 @@ const AnalysisSchema = new mongoose.Schema({
         toxic: { type: Number, default: 0 },
     },
 
-    // Реакции
     reactions: [
         {
             emoji: String,
@@ -48,7 +43,6 @@ const AnalysisSchema = new mongoose.Schema({
         },
     ],
 
-    // Массив комментариев (используем нашу схему)
     comments: [CommentSchema],
 
     executionTime: { type: Number, default: 0 },

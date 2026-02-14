@@ -1,38 +1,32 @@
-import bcrypt from 'bcryptjs'
-import jwt from 'jsonwebtoken'
-import User from '../models/User.js'
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
 
 class AuthService {
     async register(email, password) {
-        const candidate = await User.findOne({ email })
-        if (candidate) throw new Error('Пользователь уже существует')
-
-        const hashedPassword = await bcrypt.hash(password, 7)
-
+        const candidate = await User.findOne({ email });
+        if (candidate) throw new Error('Пользователь уже существует');
+        const hashedPassword = await bcrypt.hash(password, 7);
         const user = await User.create({
             email,
             password: hashedPassword,
             role: 'user',
-        })
+        });
 
-        return this.generateToken(user)
+        return this.generateToken(user);
     }
 
     async login(email, password) {
-        const user = await User.findOne({ email })
-        if (!user) throw new Error('Пользователь не найден')
-
-        // ПРОВЕРКА НА БАН
+        const user = await User.findOne({ email });
+        if (!user) throw new Error('Пользователь не найден');
         if (user.isBanned) {
             throw new Error(
-                'Ваш аккаунт заблокирован. Обратитесь к администратору.',
-            )
+                'Ваш аккаунт заблокирован. Обратитесь к администратору.'
+            );
         }
-
-        const isMatch = await bcrypt.compare(password, user.password)
-        if (!isMatch) throw new Error('Неверный пароль')
-
-        return this.generateToken(user)
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) throw new Error('Неверный пароль');
+        return this.generateToken(user);
     }
 
     generateToken(user) {
@@ -44,9 +38,9 @@ class AuthService {
                 nonce: Math.random().toString(36).substring(7),
             },
             process.env.JWT_SECRET,
-            { expiresIn: '7d' },
-        )
+            { expiresIn: '7d' }
+        );
     }
 }
 
-export default new AuthService()
+export default new AuthService();
