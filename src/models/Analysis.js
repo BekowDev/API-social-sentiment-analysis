@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const CommentSchema = new mongoose.Schema(
     {
-        comment_id: { type: Number },
+        comment_id: { type: String },
         author_name: { type: String },
         content: { type: String },
 
@@ -24,6 +24,7 @@ const AnalysisSchema = new mongoose.Schema({
         ref: 'User',
         required: true,
     },
+    taskId: { type: String, index: true },
     platform: { type: String, required: true },
     phoneNumber: { type: String },
     postLink: { type: String },

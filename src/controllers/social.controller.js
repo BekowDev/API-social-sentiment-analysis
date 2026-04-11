@@ -1,17 +1,25 @@
-import SocialAccount from '../models/Social.js';
-import Analysis from '../models/Analysis.js';
-import SocialFactory from '../services/social/social.factory.js';
-import aiService from '../services/ai.service.js';
+import SocialAccount from '../models/Social.js'
+import Analysis from '../models/Analysis.js'
+import SocialFactory from '../services/social/social.factory.js'
+import aiService from '../services/ai.service.js'
+import {
+    addAnalysisTask,
+    getAnalysisTaskById,
+} from '../services/queue.service.js'
+import {
+    detectPlatformFromTargetUrl,
+    getUserIdFromTokenPayload,
+} from '../utils/auth-request.util.js'
 
 class SocialController {
     async sendCode(req, res, next) {
         try {
-            const { phoneNumber, platform = 'telegram' } = req.body;
-            const provider = SocialFactory.getProvider(platform);
-            const result = await provider.sendCode(phoneNumber);
-            res.json(result);
+            const { phoneNumber, platform = 'telegram' } = req.body
+            const provider = SocialFactory.getProvider(platform)
+            const result = await provider.sendCode(phoneNumber)
+            res.json(result)
         } catch (e) {
-            next(e);
+            next(e)
         }
     }
 
@@ -22,147 +30,253 @@ class SocialController {
                 code,
                 password,
                 platform = 'telegram',
-            } = req.body;
-            const provider = SocialFactory.getProvider(platform);
-            const session = await provider.signIn(phoneNumber, code, password);
+            } = req.body
+            const provider = SocialFactory.getProvider(platform)
+            const session = await provider.signIn(phoneNumber, code, password)
+
+            const uid = getUserIdFromTokenPayload(req.user)
+            if (!uid) {
+                return res.status(401).json({
+                    message: 'Не удалось определить пользователя по токену',
+                })
+            }
 
             await SocialAccount.findOneAndUpdate(
-                { userId: req.user.id, platform },
+                { userId: uid, platform },
                 {
                     accountName: phoneNumber,
                     credentials: session,
                     status: 'active',
                 },
-                { upsert: true, new: true }
-            );
+                { upsert: true, new: true },
+            )
 
-            res.json({ success: true, message: 'Успешный вход' });
+            res.json({ success: true, message: 'Успешный вход' })
         } catch (e) {
-            next(e);
+            next(e)
         }
     }
 
     async analyzePost(req, res, next) {
-        const startTime = Date.now();
+        const startTime = Date.now()
 
         try {
-            const { phoneNumber, postLink, platform = 'telegram' } = req.body;
+            const { phoneNumber, mode = 'fast' } = req.body
+            const normalizedMode = mode === 'deep' ? 'deep' : 'fast'
+            const targetUrl = req.body.url || req.body.postLink || ''
 
-            const account = await SocialAccount.findOne({
-                userId: req.user.id,
-                accountName: phoneNumber,
-                platform,
-            });
+            const detected = detectPlatformFromTargetUrl(targetUrl)
+            if (!detected) {
+                return res
+                    .status(400)
+                    .json({ message: 'Неподдерживаемая ссылка' })
+            }
+            const platform = detected
 
-            if (!account)
-                return res.status(401).json({ message: 'Аккаунт не найден' });
+            const userId = getUserIdFromTokenPayload(req.user)
+            if (!userId) {
+                return res.status(401).json({
+                    message: 'Не удалось определить пользователя по токену',
+                })
+            }
+
+            let account = null
+            if (platform === 'telegram') {
+                account = await SocialAccount.findOne({
+                    userId,
+                    accountName: phoneNumber,
+                    platform: 'telegram',
+                })
+                if (!account) {
+                    return res.status(401).json({ message: 'Аккаунт не найден' })
+                }
+            }
+
+            const credentials =
+                account && account.credentials ? account.credentials : {}
 
             const provider = SocialFactory.getProvider(
                 platform,
-                account.credentials
-            );
+                credentials,
+                targetUrl,
+            )
 
-            console.log('Старт анализа...');
+            if (normalizedMode === 'deep') {
+                const job = await addAnalysisTask({
+                    userId,
+                    phoneNumber,
+                    postLink: targetUrl,
+                    platform,
+                    mode: normalizedMode,
+                })
 
-            // 2. Параллельное скачивание (Медиа + Комменты + Реакции)
-            const [postMedia, rawComments, reactions] = await Promise.all([
-                provider.getPostMedia(postLink),
-                provider.getComments(postLink),
-                provider.getPostReactions(postLink),
-            ]);
-
-            console.log(
-                `Скачано: ${rawComments.length} комментов. Получаю контекст...`
-            );
-
-            // 3. Контекст поста (1 раз)
-            const contextSummary =
-                await aiService.getPostContextSummary(postMedia);
-
-            // 4. ОПТИМИЗАЦИЯ: Разбиваем на мелкие пачки по 15 штук
-            const BATCH_SIZE = 15;
-            const batches = [];
-            for (let i = 0; i < rawComments.length; i += BATCH_SIZE) {
-                batches.push(rawComments.slice(i, i + BATCH_SIZE));
+                return res.json({
+                    status: 'processing',
+                    taskId: String(job.id),
+                    message: 'Анализ запущен в фоне',
+                })
             }
 
-            console.log(`Запуск ${batches.length} потоков параллельно...`);
+            console.log('Старт анализа...')
 
-            // 5. ПАРАЛЛЕЛЬНЫЙ ЗАПУСК
-            const aiPromises = batches.map(async (batch, index) => {
-                await new Promise((r) => setTimeout(r, index * 10));
-                return aiService.analyzeComments(batch, contextSummary);
-            });
-            const resultsArrays = await Promise.all(aiPromises);
-            const aiResults = resultsArrays.flat();
+            // 2. Параллельное скачивание (Медиа + Комменты + Реакции)
+            const [postMedia, commentsPayload, reactions] = await Promise.all([
+                provider.getPostMedia(targetUrl),
+                provider.getComments(targetUrl, normalizedMode),
+                provider.getPostReactions(targetUrl),
+            ])
 
-            console.log('AI завершил работу. Сборка данных...');
+            const normalized = SocialFactory.normalizeCommentsForAnalysis(
+                commentsPayload,
+            )
+            const comments = normalized.rawComments
+            const youtubePostContext = normalized.youtubePostContext
 
-            const finalComments = rawComments.map((comment, index) => {
-                const ai = aiResults[index] || {};
-                return {
-                    ...comment,
-                    analysis: {
+            console.log(
+                `Скачано: ${comments.length} комментов. Получаю контекст...`,
+            )
+
+            let mediaForContext = postMedia
+            if (youtubePostContext) {
+                const baseText = postMedia.text || ''
+                mediaForContext = {
+                    ...postMedia,
+                    text: baseText + '\n' + youtubePostContext,
+                }
+            }
+            const postContext =
+                await aiService.getPostContextSummary(mediaForContext)
+
+            const aiResults = await aiService.analyzeComments(
+                comments,
+                postContext,
+            )
+
+            console.log('AI завершил работу. Сборка данных...')
+
+            for (let i = 0; i < comments.length; i++) {
+                const ai = aiResults[i]
+                if (ai != null && typeof ai === 'object') {
+                    comments[i].analysis = {
                         sentiment: ai.sentiment || 'neutral',
-                        score: ai.score || 0.5,
-                        is_toxic: ai.is_toxic || false,
-                        is_sarcastic: ai.is_sarcastic || false,
+                        score:
+                            typeof ai.score === 'number' ? ai.score : 0.5,
+                        is_toxic: Boolean(ai.is_toxic),
+                        is_sarcastic: Boolean(ai.is_sarcastic),
                         emotion: ai.emotion || 'neutral',
                         explanation: ai.explanation || '',
-                    },
-                };
-            });
-            const stats = {
-                total: finalComments.length,
-                positive: finalComments.filter(
-                    (c) => c.analysis.sentiment === 'positive'
-                ).length,
-                negative: finalComments.filter(
-                    (c) => c.analysis.sentiment === 'negative'
-                ).length,
-                neutral: finalComments.filter(
-                    (c) => c.analysis.sentiment === 'neutral'
-                ).length,
-                toxic: finalComments.filter((c) => c.analysis.is_toxic === true)
-                    .length,
-                sarcastic: finalComments.filter(
-                    (c) => c.analysis.is_sarcastic === true
-                ).length,
-            };
+                    }
+                } else {
+                    comments[i].analysis = {
+                        sentiment: 'neutral',
+                        score: 0.5,
+                        is_toxic: false,
+                        is_sarcastic: false,
+                        emotion: 'neutral',
+                        explanation: '',
+                    }
+                }
+            }
 
-            const duration = Date.now() - startTime;
+            let positive = 0
+            let negative = 0
+            let neutral = 0
+            let toxic = 0
+            for (let i = 0; i < comments.length; i++) {
+                const a = comments[i].analysis
+                if (!a) {
+                    continue
+                }
+                if (a.sentiment === 'positive') {
+                    positive += 1
+                } else if (a.sentiment === 'negative') {
+                    negative += 1
+                } else if (a.sentiment === 'neutral') {
+                    neutral += 1
+                }
+                if (a.is_toxic === true) {
+                    toxic += 1
+                }
+            }
+
+            const stats = {
+                total: comments.length,
+                positive,
+                negative,
+                neutral,
+                toxic,
+            }
+
+            const duration = Date.now() - startTime
 
             const newAnalysis = new Analysis({
-                userId: req.user.id,
+                userId,
                 platform,
-                postLink,
+                postLink: targetUrl,
                 phoneNumber,
                 stats,
-                comments: finalComments,
+                comments,
                 reactions,
                 executionTime: duration,
-                postSummary: contextSummary,
-            });
+                postSummary: postContext,
+            })
 
-            await newAnalysis.save();
+            await newAnalysis.save()
 
-            console.log(`Готово за ${(duration / 1000).toFixed(2)} сек`);
-            res.json(newAnalysis);
+            console.log(`Готово за ${(duration / 1000).toFixed(2)} сек`)
+            res.json(newAnalysis)
         } catch (e) {
-            console.error('Ошибка:', e);
-            res.status(500).json({ message: e.message });
+            console.error('Ошибка:', e)
+            res.status(500).json({ message: e.message })
         }
     }
+
+    async getTaskStatus(req, res, next) {
+        try {
+            const { taskId } = req.params
+
+            const analysis = await Analysis.findOne({
+                userId: req.user.id,
+                taskId: String(taskId),
+            })
+
+            if (analysis) {
+                return res.json({
+                    status: 'completed',
+                    taskId: String(taskId),
+                    result: analysis,
+                })
+            }
+
+            const job = await getAnalysisTaskById(taskId)
+            if (!job) {
+                return res.status(404).json({
+                    status: 'not_found',
+                    taskId: String(taskId),
+                    message: 'Задача не найдена',
+                })
+            }
+
+            const state = await job.getState()
+            return res.json({
+                status: state,
+                taskId: String(taskId),
+            })
+        } catch (e) {
+            next(e)
+        }
+    }
+
     async getHistory(req, res, next) {
         try {
             const history = await Analysis.find({ userId: req.user.id })
                 .sort({ createdAt: -1 })
                 .select(
-                    'postLink stats createdAt platform executionTime postSummary'
-                );
-            res.json(history);
+                    'postLink stats createdAt platform executionTime postSummary',
+                )
+            res.json(history)
         } catch (e) {
-            next(e);
+            next(e)
         }
     }
 
@@ -171,14 +285,14 @@ class SocialController {
             const analysis = await Analysis.findOne({
                 _id: req.params.id,
                 userId: req.user.id,
-            });
+            })
             if (!analysis)
-                return res.status(404).json({ message: 'Анализ не найден' });
-            res.json(analysis);
+                return res.status(404).json({ message: 'Анализ не найден' })
+            res.json(analysis)
         } catch (e) {
-            next(e);
+            next(e)
         }
     }
 }
 
-export default new SocialController();
+export default new SocialController()

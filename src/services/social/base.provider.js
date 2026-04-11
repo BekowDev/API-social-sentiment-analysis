@@ -11,7 +11,7 @@ class BaseSocialProvider {
     async verifyCode(phone, code, hash) {
         throw new Error('Метод verifyCode() не реализован');
     }
-    async getComments(link) {
+    async getComments(link, mode = 'fast') {
         throw new Error('Метод getComments() не реализован');
     }
 }

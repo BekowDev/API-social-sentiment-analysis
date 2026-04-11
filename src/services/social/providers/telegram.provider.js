@@ -35,12 +35,13 @@ class TelegramProvider extends BaseSocialProvider {
         await this.client.connect();
         clientCache.set(sessionStr, this.client);
     }
-    async getComments(postLink) {
+    async getComments(postLink, mode = 'fast') {
         await this.connect();
         try {
             const parts = postLink.split('/');
             const postId = parseInt(parts[parts.length - 1]);
             const channelName = parts[parts.length - 2];
+            const commentsLimit = mode === 'deep' ? undefined : 100;
 
             // Получаем сам пост
             const messages = await this.client.getMessages(channelName, {
@@ -53,9 +54,13 @@ class TelegramProvider extends BaseSocialProvider {
             // 👇 ИЗМЕНЕНИЕ ЗДЕСЬ 👇
             const commentsParams = {
                 replyTo: post.id,
-                limit: undefined,
+                limit: commentsLimit,
             };
-            console.log(`Скачиваю все комментарии...`);
+            console.log(
+                mode === 'deep'
+                    ? 'Скачиваю все комментарии (mode=deep)...'
+                    : 'Скачиваю до 100 комментариев (mode=fast)...'
+            );
             const result = await this.client.getMessages(
                 channelName,
                 commentsParams

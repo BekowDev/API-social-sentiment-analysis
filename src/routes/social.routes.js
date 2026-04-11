@@ -1,13 +1,16 @@
-import { Router } from 'express';
-import socialController from '../controllers/social.controller.js';
-import { authMiddleware } from '../middlewares/auth.middleware.js';
+import { Router } from 'express'
+import socialController from '../controllers/social.controller.js'
+import { authMiddleware } from '../middlewares/auth.middleware.js'
 
-const router = new Router();
+const router = new Router()
 
-router.post('/send-code', authMiddleware, socialController.sendCode);
-router.post('/verify', authMiddleware, socialController.verifyCode);
-router.post('/analyze', authMiddleware, socialController.analyzePost);
-router.get('/history', authMiddleware, socialController.getHistory);
-router.get('/history/:id', authMiddleware, socialController.getAnalysisById);
+router.use(authMiddleware)
 
-export default router;
+router.post('/send-code', socialController.sendCode)
+router.post('/verify', socialController.verifyCode)
+router.post('/analyze', socialController.analyzePost)
+router.get('/tasks/:taskId', socialController.getTaskStatus)
+router.get('/history', socialController.getHistory)
+router.get('/history/:id', socialController.getAnalysisById)
+
+export default router
