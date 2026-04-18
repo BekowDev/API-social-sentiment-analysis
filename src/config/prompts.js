@@ -137,6 +137,7 @@ export function buildReducePrompt(options = {}) {
         'You are a senior analytics summarizer.',
         `Mode: ${mode.toUpperCase()}.`,
         'Aggregate partial batch analyses into one final concise insight.',
+        'You must produce business-readable conclusions for dashboard users.',
         '',
         'Context summary:',
         contextSummary || '(empty)',
@@ -149,12 +150,70 @@ export function buildReducePrompt(options = {}) {
         '',
         'Return STRICT JSON object:',
         '{',
-        '  "overall_sentiment": "positive|negative|neutral",',
-        '  "overall_toxicity_level": "low|medium|high",',
-        '  "top_themes": ["theme1", "theme2", "theme3"],',
-        '  "audience_mood": "brief mood summary",',
-        '  "risk_flags": ["flag1", "flag2"],',
-        '  "final_summary": "2-5 sentences of final insight"',
+        '  "mainConclusion": "2-3 concise sentences with overall conclusion",',
+        '  "keyInsights": [',
+        '    "specific fact or recommendation #1",',
+        '    "specific fact or recommendation #2",',
+        '    "specific fact or recommendation #3"',
+        '  ]',
         '}',
+        'Constraints:',
+        '- keyInsights must contain 3 to 5 short bullet-style strings.',
+        '- No markdown, no code block wrappers.',
+    ].join('\n')
+}
+
+export function buildInsightsSummaryPrompt(options = {}) {
+    const contextSummary = String(options.contextSummary || '')
+    const analyzedCommentsJson = String(options.analyzedCommentsJson || '[]')
+    const language = String(options.language || 'ru').toLowerCase()
+
+    let languageInstruction =
+        'Пиши на русском языке.'
+    let contentInstruction =
+        '  "content": "3-4 предложения на русском с общим выводом",'
+    let pointsExamples = ['    "тезис 1",', '    "тезис 2",', '    "тезис 3"']
+
+    if (language === 'en') {
+        languageInstruction = 'Write in English.'
+        contentInstruction =
+            '  "content": "3-4 sentences in English with the overall conclusion",'
+        pointsExamples = [
+            '    "insight 1",',
+            '    "insight 2",',
+            '    "insight 3"',
+        ]
+    } else if (language === 'kk') {
+        languageInstruction = 'Жауапты қазақ тілінде жаз.'
+        contentInstruction =
+            '  "content": "Қазақ тілінде 3-4 сөйлемдік жалпы қорытынды",'
+        pointsExamples = [
+            '    "тезис 1",',
+            '    "тезис 2",',
+            '    "тезис 3"',
+        ]
+    }
+
+    return [
+        'Ты аналитик пользовательских комментариев для маркетинговой команды.',
+        'На основе массива уже проанализированных комментариев подготовь краткий конспект.',
+        languageInstruction,
+        '',
+        'Контекст поста:',
+        contextSummary || '(пусто)',
+        '',
+        'Проанализированные комментарии (JSON):',
+        analyzedCommentsJson,
+        '',
+        'Верни СТРОГО JSON-объект без markdown и лишнего текста:',
+        '{',
+        contentInstruction,
+        '  "keyPoints": [',
+        ...pointsExamples,
+        '  ]',
+        '}',
+        'Ограничения:',
+        '- keyPoints: 3-4 конкретных инсайта.',
+        '- Формулируй тезисы предметно, без воды.',
     ].join('\n')
 }

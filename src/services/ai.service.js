@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import {
     buildCommentsBatchPrompt,
     buildContextSummaryInstruction,
+    buildInsightsSummaryPrompt,
     buildReducePrompt,
 } from '../config/prompts.js'
 import { config } from '../config/index.js'
@@ -255,6 +256,117 @@ class AIService {
         }
     }
 
+    getFallbackSummary(language = 'ru') {
+        if (language === 'en') {
+            return {
+                content:
+                    'Audience feedback is mixed overall. The discussion contains both supportive and critical reactions. Review repeated negative themes to understand what requires immediate improvements.',
+                keyPoints: [
+                    'Focus on comments with the strongest emotional signal.',
+                    'Identify repeated reasons behind negative feedback.',
+                    'Turn constructive suggestions into actionable tasks.',
+                ],
+            }
+        }
+
+        if (language === 'kk') {
+            return {
+                content:
+                    'Аудитория пікірі жалпы алғанда аралас. Талқылауда қолдаушы да, сын айтатын да пікірлер бар. Қайталанатын негатив себептерін бөлек қарап, тез әрекет ететін бағыттарды анықтау қажет.',
+                keyPoints: [
+                    'Эмоциясы ең жоғары пікірлерге басымдық беріңіз.',
+                    'Негатив пікірлердегі қайталанатын себептерді анықтаңыз.',
+                    'Конструктивті ұсыныстарды нақты іс-шараға айналдырыңыз.',
+                ],
+            }
+        }
+
+        return {
+            content:
+                'Обсуждение в целом отражает смешанную реакцию аудитории. В комментариях одновременно встречаются поддерживающие и критические оценки. Для уточнения причин изменений настроения стоит отдельно проверить негативные сообщения с повторяющимися темами.',
+            keyPoints: [
+                'Выделите комментарии с наиболее выраженной эмоциональной окраской.',
+                'Проверьте повторяющиеся причины недовольства в негативных откликах.',
+                'Используйте конструктивные предложения аудитории как базу для улучшений.',
+            ],
+        }
+    }
+
+    normalizeSummary(summaryCandidate, language = 'ru') {
+        const fallback = this.getFallbackSummary(language)
+        if (!summaryCandidate || typeof summaryCandidate !== 'object') {
+            return fallback
+        }
+
+        const rawContent =
+            summaryCandidate.content ||
+            summaryCandidate.mainConclusion ||
+            summaryCandidate.final_summary
+        const content = rawContent
+            ? String(rawContent).trim()
+            : fallback.content
+
+        let keyPoints = Array.isArray(summaryCandidate.keyPoints)
+            ? summaryCandidate.keyPoints
+            : Array.isArray(summaryCandidate.keyInsights)
+              ? summaryCandidate.keyInsights
+            : []
+        keyPoints = keyPoints
+            .map((item) => String(item || '').trim())
+            .filter(Boolean)
+            .slice(0, 4)
+
+        if (keyPoints.length < 3) {
+            const merged = keyPoints.concat(
+                fallback.keyPoints.slice(0, 3 - keyPoints.length),
+            )
+            keyPoints = merged.slice(0, 4)
+        }
+
+        return {
+            content,
+            keyPoints,
+        }
+    }
+
+    async generateInsightsSummary(analyzedComments, options = {}) {
+        const language = String(options.language || 'ru').toLowerCase()
+        const safeComments = Array.isArray(analyzedComments) ? analyzedComments : []
+        if (safeComments.length === 0) {
+            return this.getFallbackSummary(language)
+        }
+
+        const compactRows = safeComments.map((row) => ({
+            content: String(row?.content || ''),
+            sentiment: String(row?.analysis?.sentiment || 'neutral'),
+            score:
+                typeof row?.analysis?.score === 'number'
+                    ? row.analysis.score
+                    : 0.5,
+            is_toxic: Boolean(row?.analysis?.is_toxic),
+            is_sarcastic: Boolean(row?.analysis?.is_sarcastic),
+            emotion: String(row?.analysis?.emotion || 'neutral'),
+            explanation: String(row?.analysis?.explanation || ''),
+        }))
+
+        const prompt = buildInsightsSummaryPrompt({
+            contextSummary: options.contextSummary || '',
+            analyzedCommentsJson: JSON.stringify(compactRows),
+            language,
+        })
+
+        try {
+            const result = await this.textModel.generateContent(prompt)
+            const parsed = this.parseJsonFromModelResponse(
+                result.response.text(),
+            )
+            return this.normalizeSummary(parsed, language)
+        } catch (error) {
+            console.error('Insights summary error:', error.message)
+            return this.getFallbackSummary(language)
+        }
+    }
+
     buildPartialBatchSummary(analyzedResults, batchItems) {
         const safeResults = Array.isArray(analyzedResults)
             ? analyzedResults
@@ -431,7 +543,10 @@ class AIService {
     ) {
         const source = Array.isArray(comments) ? comments : []
         if (source.length === 0) {
-            return []
+            return {
+                analyses: [],
+                summary: this.getFallbackSummary(),
+            }
         }
 
         const contextSummary = options.contextSummary || ''
@@ -526,12 +641,15 @@ class AIService {
             { mode, contextSummary, hasTranscript, hasVideo },
         )
 
-        return finalResults
+        return {
+            analyses: finalResults,
+            summary: this.normalizeSummary(this.lastAggregateInsight),
+        }
     }
 
     async analyzeComments(commentsList, contextSummary, options = {}) {
         try {
-            return await this.analyzeInBatches(
+            const result = await this.analyzeInBatches(
                 commentsList,
                 DEFAULT_BATCH_SIZE,
                 {
@@ -541,6 +659,7 @@ class AIService {
                     hasVideo: Boolean(options.hasVideo),
                 },
             )
+            return result?.analyses || []
         } catch (e) {
             console.error('Analysis Error:', e.message)
             return []

@@ -14,6 +14,55 @@ import {
     getUserIdFromTokenPayload,
 } from '../utils/auth-request.util.js'
 
+function deriveProgressMessage(progressValue, state) {
+    if (typeof progressValue === 'number') {
+        if (progressValue >= 90) {
+            return 'Финальная обработка и сохранение результатов...'
+        }
+        if (progressValue >= 60) {
+            return 'Отправка данных в Gemini AI для анализа тональности...'
+        }
+        if (progressValue >= 30) {
+            return 'Сбор комментариев и данных о реакциях...'
+        }
+        if (progressValue >= 10) {
+            return 'Инициализация и подключение к платформе...'
+        }
+    }
+
+    if (state === 'waiting') {
+        return 'Задача ожидает запуска...'
+    }
+    if (state === 'active') {
+        return 'Анализ в процессе...'
+    }
+    if (state === 'failed') {
+        return 'Задача завершилась с ошибкой'
+    }
+
+    return 'Задача в очереди...'
+}
+
+function normalizeTaskProgress(rawProgress, state) {
+    if (rawProgress && typeof rawProgress === 'object') {
+        const value = Number(rawProgress.progress ?? rawProgress.value)
+        const progress = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
+        const message = String(
+            rawProgress.message ||
+                rawProgress.currentStep ||
+                deriveProgressMessage(progress, state),
+        )
+        return { progress, message }
+    }
+
+    const numeric = Number(rawProgress)
+    const progress = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0
+    return {
+        progress,
+        message: deriveProgressMessage(progress, state),
+    }
+}
+
 class SocialController {
     async analyzePost(req, res, next) {
         try {
@@ -46,12 +95,20 @@ class SocialController {
             const batchSize = Number.isFinite(batchSizeCandidate)
                 ? Math.max(1, batchSizeCandidate)
                 : undefined
+            const languageCandidate = String(req.body.language || 'ru')
+                .toLowerCase()
+                .trim()
+            const language =
+                languageCandidate === 'en' || languageCandidate === 'kk'
+                    ? languageCandidate
+                    : 'ru'
             const jobPayload = {
                 userId,
                 platform,
                 postLink: targetUrl,
                 phoneNumber,
                 mode: normalizedMode,
+                language,
             }
 
             if (batchSize) {
@@ -76,6 +133,7 @@ class SocialController {
                 taskId: String(job.id),
                 platform,
                 mode: normalizedMode,
+                progress: 0,
                 message: 'Анализ поставлен в очередь',
                 },
                 { statusCode: 202 },
@@ -104,6 +162,8 @@ class SocialController {
                 return sendSuccess(res, {
                     status: 'completed',
                     taskId: String(taskId),
+                    progress: 100,
+                    message: 'Анализ завершен. Результаты готовы.',
                     result: analysis,
                 })
             }
@@ -114,9 +174,12 @@ class SocialController {
             }
 
             const state = await job.getState()
+            const taskProgress = normalizeTaskProgress(job.progress, state)
             return sendSuccess(res, {
                 status: state,
                 taskId: String(taskId),
+                progress: taskProgress.progress,
+                message: taskProgress.message,
             })
         } catch (e) {
             return next(e)

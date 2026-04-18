@@ -15,6 +15,9 @@ export const analyzePostSchema = Joi.object({
     mode: Joi.string().valid('fast', 'deep', 'full').default('fast').messages({
         'any.only': 'mode должен быть одним из: fast, deep, full',
     }),
+    language: Joi.string().valid('ru', 'en', 'kk').optional().messages({
+        'any.only': 'language должен быть одним из: ru, en, kk',
+    }),
     phoneNumber: Joi.string().trim().max(30).optional(),
     videoFileUri: Joi.string().uri({ scheme: ['http', 'https'] }).optional(),
     videoMimeType: Joi.string().trim().max(100).optional(),

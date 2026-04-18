@@ -46,6 +46,13 @@ const AnalysisSchema = new mongoose.Schema({
 
     comments: [CommentSchema],
 
+    aiSummary: {
+        content: { type: String, default: '' },
+        keyPoints: [{ type: String }],
+    },
+
+    postSummary: { type: String, default: '' },
+
     executionTime: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
 })

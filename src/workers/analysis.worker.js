@@ -6,11 +6,46 @@ import aiService from '../services/ai.service.js'
 import { ANALYSIS_QUEUE_NAME } from '../services/queue.service.js'
 import { detectPlatformFromTargetUrl } from '../utils/auth-request.util.js'
 
-async function runAnalysis(data) {
+const ANALYSIS_PROGRESS_STEPS = {
+    start: {
+        progress: 10,
+        message: 'Инициализация и подключение к платформе...',
+    },
+    commentsFetched: {
+        progress: 30,
+        message: 'Сбор комментариев и данных о реакциях...',
+    },
+    geminiStarted: {
+        progress: 60,
+        message: 'Отправка данных в Gemini AI для анализа тональности...',
+    },
+    finalizing: {
+        progress: 90,
+        message: 'Финальная обработка и сохранение результатов...',
+    },
+}
+
+async function updateJobProgress(job, step) {
+    if (!job || !step) {
+        return
+    }
+
+    if (typeof job.updateProgress === 'function') {
+        await job.updateProgress(step)
+        return
+    }
+
+    if (typeof job.progress === 'function') {
+        await job.progress(step)
+    }
+}
+
+async function runAnalysis(data, job) {
     const userId = data.userId
     const phoneNumber = data.phoneNumber
     const postLink = data.postLink
     const mode = data.mode
+    const language = data.language
     const taskId = data.taskId
     const batchSize = Number(data.batchSize) || 50
     const startTime = Date.now()
@@ -44,6 +79,7 @@ async function runAnalysis(data) {
         SocialFactory.normalizeCommentsForAnalysis(commentsPayload)
     const comments = normalized.rawComments
     const youtubePostContext = normalized.youtubePostContext
+    await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.commentsFetched)
 
     let mediaForContext = postMedia
     if (youtubePostContext) {
@@ -65,9 +101,13 @@ async function runAnalysis(data) {
 
     const postContext = await aiService.getPostContextSummary(mediaForContext)
 
-    const aiResults = await aiService.analyzeInBatches(comments, batchSize, {
+    await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.geminiStarted)
+    const aiPayload = await aiService.analyzeInBatches(comments, batchSize, {
         contextSummary: postContext,
     })
+    const aiResults = Array.isArray(aiPayload?.analyses)
+        ? aiPayload.analyses
+        : []
 
     for (let i = 0; i < comments.length; i++) {
         const ai = aiResults[i]
@@ -120,8 +160,14 @@ async function runAnalysis(data) {
         neutral,
         toxic,
     }
+    const aiSummary = await aiService.generateInsightsSummary(comments, {
+        contextSummary: postContext,
+        mode: normalizedMode,
+        language,
+    })
 
     const duration = Date.now() - startTime
+    await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.finalizing)
 
     const analysis = await Analysis.create({
         userId,
@@ -134,6 +180,7 @@ async function runAnalysis(data) {
         reactions,
         executionTime: duration,
         postSummary: postContext,
+        aiSummary,
     })
 
     return analysis
@@ -142,10 +189,11 @@ async function runAnalysis(data) {
 export const analysisWorker = new Worker(
     ANALYSIS_QUEUE_NAME,
     async function processAnalysisJob(job) {
+        await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.start)
         const analysis = await runAnalysis({
             ...job.data,
             taskId: String(job.id),
-        })
+        }, job)
 
         return { analysisId: analysis._id }
     },
