@@ -1,4 +1,6 @@
-import BaseSocialProvider from '../base.provider.js';
+import BaseSocialProvider from '../base.provider.js'
+import axios from 'axios'
+import proxyManager from '../../../shared/proxy.manager.js'
 
 /**
  * Достаёт id ролика из обычной ссылки YouTube.
@@ -6,85 +8,248 @@ import BaseSocialProvider from '../base.provider.js';
  */
 function extractVideoIdFromUrl(urlString) {
     if (!urlString || typeof urlString !== 'string') {
-        return null;
+        return null
     }
 
-    const url = urlString.trim();
+    const url = urlString.trim()
 
     if (url.indexOf('youtu.be/') !== -1) {
-        const start = url.indexOf('youtu.be/') + 'youtu.be/'.length;
-        let id = url.slice(start);
-        const q = id.indexOf('?');
-        const sl = id.indexOf('/');
-        let end = id.length;
+        const start = url.indexOf('youtu.be/') + 'youtu.be/'.length
+        let id = url.slice(start)
+        const q = id.indexOf('?')
+        const sl = id.indexOf('/')
+        let end = id.length
         if (q !== -1) {
-            end = Math.min(end, q);
+            end = Math.min(end, q)
         }
         if (sl !== -1) {
-            end = Math.min(end, sl);
+            end = Math.min(end, sl)
         }
-        id = id.slice(0, end);
+        id = id.slice(0, end)
         if (id.length > 0) {
-            return id;
+            return id
         }
-        return null;
+        return null
     }
 
     if (url.indexOf('youtube.com') !== -1) {
-        const match = url.match(/[?&]v=([^&]+)/);
+        const match = url.match(/[?&]v=([^&]+)/)
         if (match && match[1]) {
-            return match[1];
+            return match[1]
         }
     }
 
-    return null;
+    return null
 }
 
 class YouTubeProvider extends BaseSocialProvider {
-    constructor(credentials = {}) {
-        super(credentials);
+    static platform = 'youtube'
+
+    static canHandleUrl(url) {
+        const target = String(url || '').toLowerCase()
+        return (
+            target.indexOf('youtube.com') !== -1 ||
+            target.indexOf('youtu.be') !== -1
+        )
     }
 
-    /**
-     * Загружает название и описание ролика (YouTube Data API v3, videos.list).
-     * @returns {{ title: string, description: string }}
-     */
-    async fetchVideoSnippet(videoId, apiKey) {
-        const params = new URLSearchParams();
-        params.set('part', 'snippet');
-        params.set('id', videoId);
-        params.set('key', apiKey);
+    constructor(credentials = {}) {
+        super(credentials)
+    }
+
+    async requestJson(url) {
+        try {
+            const response = await axios.get(
+                url,
+                proxyManager.buildAxiosConfig({ timeout: 25000 }),
+            )
+
+            return {
+                ok: true,
+                status: response.status,
+                data: response.data,
+                errorText: '',
+            }
+        } catch (error) {
+            return {
+                ok: false,
+                status: error?.response?.status || 500,
+                data: null,
+                errorText:
+                    error?.response?.data?.error?.message ||
+                    error?.response?.data?.message ||
+                    error?.message ||
+                    'Request failed',
+            }
+        }
+    }
+
+    async fetchVideoDetails(videoId, apiKey) {
+        const params = new URLSearchParams()
+        params.set('part', 'snippet,statistics')
+        params.set('id', videoId)
+        params.set('key', apiKey)
 
         const requestUrl =
-            'https://www.googleapis.com/youtube/v3/videos?' + params.toString();
+            'https://www.googleapis.com/youtube/v3/videos?' + params.toString()
 
-        const response = await fetch(requestUrl);
+        const response = await this.requestJson(requestUrl)
         if (!response.ok) {
-            const errText = await response.text();
             console.error(
                 'YouTube videos.list ошибка:',
                 response.status,
-                errText.slice(0, 200)
-            );
-            return { title: '', description: '' };
+                String(response.errorText || '').slice(0, 200),
+            )
+            return {
+                title: '',
+                description: '',
+                likeCount: '',
+                viewCount: '',
+            }
         }
 
-        const data = await response.json();
+        const data = response.data
         if (!data.items || data.items.length === 0) {
-            return { title: '', description: '' };
+            return {
+                title: '',
+                description: '',
+                likeCount: '',
+                viewCount: '',
+            }
         }
 
-        const snippet = data.items[0].snippet;
+        const video = data.items[0]
+        const snippet = video.snippet
         if (!snippet) {
-            return { title: '', description: '' };
+            return {
+                title: '',
+                description: '',
+                likeCount: '',
+                viewCount: '',
+            }
         }
 
-        const title = snippet.title ? String(snippet.title) : '';
+        const title = snippet.title ? String(snippet.title) : ''
         const description = snippet.description
             ? String(snippet.description).trim()
-            : '';
+            : ''
+        let likeCount = ''
+        let viewCount = ''
+        if (video.statistics) {
+            if (video.statistics.likeCount) {
+                likeCount = String(video.statistics.likeCount)
+            }
+            if (video.statistics.viewCount) {
+                viewCount = String(video.statistics.viewCount)
+            }
+        }
 
-        return { title, description };
+        return { title, description, likeCount, viewCount }
+    }
+
+    async fetchTranscript(videoId) {
+        const langList = ['ru', 'en', 'uk']
+        for (let i = 0; i < langList.length; i++) {
+            const lang = langList[i]
+            const params = new URLSearchParams()
+            params.set('v', videoId)
+            params.set('lang', lang)
+            params.set('fmt', 'json3')
+            const transcriptUrl =
+                'https://www.youtube.com/api/timedtext?' + params.toString()
+
+            try {
+                const response = await this.requestJson(transcriptUrl)
+                if (!response.ok) {
+                    continue
+                }
+                const data = response.data
+                if (!data || !Array.isArray(data.events)) {
+                    continue
+                }
+
+                let transcript = ''
+                for (let j = 0; j < data.events.length; j++) {
+                    const event = data.events[j]
+                    if (!event || !Array.isArray(event.segs)) {
+                        continue
+                    }
+                    for (let k = 0; k < event.segs.length; k++) {
+                        const seg = event.segs[k]
+                        if (!seg || !seg.utf8) {
+                            continue
+                        }
+                        const piece = String(seg.utf8)
+                            .replace(/\s+/g, ' ')
+                            .trim()
+                        if (piece.length === 0) {
+                            continue
+                        }
+                        if (transcript.length > 0) {
+                            transcript += ' '
+                        }
+                        transcript += piece
+                    }
+                }
+
+                if (transcript.length > 0) {
+                    return transcript
+                }
+            } catch (e) {
+                console.error(
+                    'YouTube: ошибка загрузки транскрипта (' + lang + '):',
+                    e.message,
+                )
+            }
+        }
+
+        return ''
+    }
+
+    async fetchRepliesByParent(parentId, apiKey) {
+        const replies = []
+        let pageToken = ''
+
+        while (true) {
+            const params = new URLSearchParams()
+            params.set('part', 'snippet')
+            params.set('parentId', parentId)
+            params.set('maxResults', '100')
+            params.set('key', apiKey)
+            if (pageToken) {
+                params.set('pageToken', pageToken)
+            }
+            const requestUrl =
+                'https://www.googleapis.com/youtube/v3/comments?' +
+                params.toString()
+
+            const response = await this.requestJson(requestUrl)
+            if (!response.ok) {
+                break
+            }
+            const data = response.data
+            if (
+                !data ||
+                !Array.isArray(data.items) ||
+                data.items.length === 0
+            ) {
+                break
+            }
+
+            for (let i = 0; i < data.items.length; i++) {
+                const item = data.items[i]
+                if (item && item.snippet) {
+                    replies.push(item)
+                }
+            }
+
+            if (!data.nextPageToken) {
+                break
+            }
+            pageToken = data.nextPageToken
+        }
+
+        return replies
     }
 
     /**
@@ -92,123 +257,326 @@ class YouTubeProvider extends BaseSocialProvider {
      * @param {string|number} modeOrLimit - как в базе: 'fast' / 'deep' или число лимита
      */
     async getComments(url, modeOrLimit = 'fast') {
-        let limit = 50;
+        let limit = 50
+        let mode = 'fast'
         if (modeOrLimit === 'deep') {
-            limit = 100;
+            limit = 100
+            mode = 'deep'
+        } else if (modeOrLimit === 'full') {
+            limit = 100
+            mode = 'full'
         } else if (typeof modeOrLimit === 'number' && modeOrLimit > 0) {
-            limit = modeOrLimit;
+            limit = modeOrLimit
         }
         if (limit > 100) {
-            limit = 100;
+            limit = 100
         }
         if (limit < 1) {
-            limit = 1;
+            limit = 1
         }
 
-        const videoId = extractVideoIdFromUrl(url);
+        const videoId = extractVideoIdFromUrl(url)
         if (!videoId) {
             return {
                 postContext: 'Анализ комментариев YouTube видео',
                 comments: [],
-            };
+            }
         }
 
-        const apiKey = process.env.YOUTUBE_API_KEY;
+        const apiKey = process.env.YOUTUBE_API_KEY
         if (!apiKey) {
-            console.error('YouTube: в .env не задан YOUTUBE_API_KEY');
+            console.error('YouTube: в .env не задан YOUTUBE_API_KEY')
             return {
                 postContext: 'Анализ комментариев YouTube видео',
                 comments: [],
-            };
+            }
         }
 
-        let title = '';
-        let description = '';
+        let title = ''
+        let description = ''
+        let likeCount = ''
+        let viewCount = ''
         try {
-            const snippet = await this.fetchVideoSnippet(videoId, apiKey);
-            title = snippet.title;
-            description = snippet.description;
+            const details = await this.fetchVideoDetails(videoId, apiKey)
+            title = details.title
+            description = details.description
+            likeCount = details.likeCount
+            viewCount = details.viewCount
         } catch (e) {
-            console.error('YouTube: не удалось загрузить описание видео:', e.message);
+            console.error(
+                'YouTube: не удалось загрузить описание видео:',
+                e.message,
+            )
         }
 
-        const postContext =
-            'Название видео: ' + title + '. Описание: ' + description + '.';
-
-        const params = new URLSearchParams();
-        params.set('part', 'snippet');
-        params.set('videoId', videoId);
-        params.set('maxResults', String(limit));
-        params.set('key', apiKey);
-
-        const requestUrl =
-            'https://www.googleapis.com/youtube/v3/commentThreads?' +
-            params.toString();
+        const basicPostContext =
+            'Название видео: ' + title + '. Описание: ' + description + '.'
 
         try {
-            const response = await fetch(requestUrl);
-            if (!response.ok) {
-                const errText = await response.text();
-                console.error(
-                    'YouTube API ошибка:',
-                    response.status,
-                    errText.slice(0, 200)
-                );
-                return {
-                    postContext,
-                    comments: [],
-                };
+            const includeReplies = mode === 'full'
+            const threadItems = []
+            let pageToken = ''
+
+            while (threadItems.length < limit) {
+                const params = new URLSearchParams()
+                if (includeReplies) {
+                    params.set('part', 'snippet,replies')
+                } else {
+                    params.set('part', 'snippet')
+                }
+                params.set('videoId', videoId)
+                params.set('maxResults', String(limit))
+                params.set('key', apiKey)
+                if (pageToken) {
+                    params.set('pageToken', pageToken)
+                }
+
+                const requestUrl =
+                    'https://www.googleapis.com/youtube/v3/commentThreads?' +
+                    params.toString()
+
+                const response = await this.requestJson(requestUrl)
+                if (!response.ok) {
+                    console.error(
+                        'YouTube API ошибка:',
+                        response.status,
+                        String(response.errorText || '').slice(0, 200),
+                    )
+                    break
+                }
+
+                const data = response.data
+                if (
+                    !data ||
+                    !Array.isArray(data.items) ||
+                    data.items.length === 0
+                ) {
+                    break
+                }
+
+                for (let i = 0; i < data.items.length; i++) {
+                    if (threadItems.length >= limit) {
+                        break
+                    }
+                    threadItems.push(data.items[i])
+                }
+
+                if (!data.nextPageToken) {
+                    break
+                }
+                pageToken = data.nextPageToken
             }
 
-            const data = await response.json();
-            const items = data.items;
-            const texts = [];
+            const texts = []
+            const fullComments = []
+            const threadLines = []
 
-            if (items && items.length > 0) {
-                for (let i = 0; i < items.length; i++) {
-                    const item = items[i];
-                    const snippetItem = item.snippet;
+            if (threadItems.length > 0) {
+                for (let i = 0; i < threadItems.length; i++) {
+                    const item = threadItems[i]
+                    const snippetItem = item.snippet
                     if (!snippetItem || !snippetItem.topLevelComment) {
-                        continue;
+                        continue
                     }
-                    const top = snippetItem.topLevelComment.snippet;
+                    const topLevelComment = snippetItem.topLevelComment
+                    const top = topLevelComment.snippet
                     if (!top) {
-                        continue;
+                        continue
                     }
-                    let text = top.textOriginal;
+                    let text = top.textOriginal
                     if (!text) {
-                        text = top.textDisplay || '';
+                        text = top.textDisplay || ''
                     }
-                    if (text && String(text).trim().length > 0) {
-                        texts.push(String(text).trim());
+                    const rootText = text ? String(text).trim() : ''
+                    if (rootText.length === 0) {
+                        continue
+                    }
+
+                    if (!includeReplies) {
+                        texts.push(rootText)
+                        continue
+                    }
+
+                    let rootAuthor = 'YouTube'
+                    if (top.authorDisplayName) {
+                        rootAuthor = String(top.authorDisplayName)
+                    }
+                    const rootCommentId = topLevelComment.id
+                        ? String(topLevelComment.id)
+                        : 'yt-root-' + i
+
+                    fullComments.push({
+                        comment_id: rootCommentId,
+                        author_name: rootAuthor,
+                        content: rootText,
+                        date: top.publishedAt || new Date(),
+                        thread: {
+                            threadId: item.id ? String(item.id) : '',
+                            parentId: null,
+                            depth: 0,
+                        },
+                    })
+                    threadLines.push(
+                        'Тред #' +
+                            String(i + 1) +
+                            ' | ROOT [' +
+                            rootAuthor +
+                            ']: ' +
+                            rootText,
+                    )
+
+                    let replyItems = []
+                    if (
+                        item.replies &&
+                        Array.isArray(item.replies.comments) &&
+                        item.replies.comments.length > 0
+                    ) {
+                        for (let j = 0; j < item.replies.comments.length; j++) {
+                            replyItems.push(item.replies.comments[j])
+                        }
+                    }
+
+                    let totalReplyCount = 0
+                    if (typeof snippetItem.totalReplyCount === 'number') {
+                        totalReplyCount = snippetItem.totalReplyCount
+                    }
+                    if (totalReplyCount > replyItems.length) {
+                        const extraReplies = await this.fetchRepliesByParent(
+                            rootCommentId,
+                            apiKey,
+                        )
+                        for (let j = 0; j < extraReplies.length; j++) {
+                            const extra = extraReplies[j]
+                            let exists = false
+                            for (let k = 0; k < replyItems.length; k++) {
+                                if (
+                                    replyItems[k] &&
+                                    replyItems[k].id === extra.id
+                                ) {
+                                    exists = true
+                                    break
+                                }
+                            }
+                            if (!exists) {
+                                replyItems.push(extra)
+                            }
+                        }
+                    }
+
+                    for (let j = 0; j < replyItems.length; j++) {
+                        const replyItem = replyItems[j]
+                        if (!replyItem || !replyItem.snippet) {
+                            continue
+                        }
+                        const replySnippet = replyItem.snippet
+                        let replyText = replySnippet.textOriginal
+                        if (!replyText) {
+                            replyText = replySnippet.textDisplay || ''
+                        }
+                        replyText = String(replyText).trim()
+                        if (replyText.length === 0) {
+                            continue
+                        }
+                        let replyAuthor = 'YouTube'
+                        if (replySnippet.authorDisplayName) {
+                            replyAuthor = String(replySnippet.authorDisplayName)
+                        }
+                        const replyCommentId = replyItem.id
+                            ? String(replyItem.id)
+                            : rootCommentId + '-r-' + j
+
+                        fullComments.push({
+                            comment_id: replyCommentId,
+                            author_name: replyAuthor,
+                            content: replyText,
+                            date: replySnippet.publishedAt || new Date(),
+                            thread: {
+                                threadId: item.id ? String(item.id) : '',
+                                parentId: rootCommentId,
+                                depth: 1,
+                            },
+                        })
+                        threadLines.push(
+                            'Тред #' +
+                                String(i + 1) +
+                                ' | REPLY [' +
+                                replyAuthor +
+                                '] -> ' +
+                                replyText,
+                        )
                     }
                 }
             }
 
+            if (includeReplies) {
+                const transcript = await this.fetchTranscript(videoId)
+                let fullContext =
+                    'РЕЖИМ FULL.\n' +
+                    'Название видео: ' +
+                    title +
+                    '\n' +
+                    'Описание: ' +
+                    description +
+                    '\n' +
+                    'Просмотры: ' +
+                    (viewCount || 'нет данных') +
+                    '\n' +
+                    'Лайки: ' +
+                    (likeCount || 'нет данных') +
+                    '\n'
+
+                if (threadLines.length > 0) {
+                    fullContext += '\nСтруктура диалогов:\n'
+                    for (let i = 0; i < threadLines.length; i++) {
+                        fullContext += threadLines[i] + '\n'
+                    }
+                }
+
+                if (transcript && transcript.length > 0) {
+                    fullContext += '\nТранскрипт видео:\n' + transcript
+                } else {
+                    fullContext += '\nТранскрипт видео: недоступен'
+                }
+
+                return {
+                    postContext: fullContext,
+                    comments: fullComments,
+                }
+            }
+
             return {
-                postContext,
+                postContext: basicPostContext,
                 comments: texts,
-            };
+            }
         } catch (e) {
-            console.error('YouTube: не удалось загрузить комментарии:', e.message);
+            console.error(
+                'YouTube: не удалось загрузить комментарии:',
+                e.message,
+            )
             return {
-                postContext,
+                postContext: basicPostContext,
                 comments: [],
-            };
+            }
         }
     }
 
-    async getPostMedia(postLink) {
+    async getPostMedia(postLink, mode = 'fast') {
+        let text =
+            'YouTube: контент страницы видео (только комментарии к ролику).'
+        if (mode === 'full') {
+            text =
+                'YouTube: полный контекст ролика и комментариев будет добавлен в contextSummary.'
+        }
         return {
             buffer: null,
             mimeType: null,
-            text: 'YouTube: контент страницы видео (только комментарии к ролику).',
-        };
+            text: text,
+        }
     }
 
     async getPostReactions() {
-        return [];
+        return []
     }
 }
 
-export default YouTubeProvider;
+export default YouTubeProvider

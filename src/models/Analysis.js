@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose from 'mongoose'
 
 const CommentSchema = new mongoose.Schema(
     {
@@ -15,8 +15,8 @@ const CommentSchema = new mongoose.Schema(
             lang: { type: String },
         },
     },
-    { _id: false }
-);
+    { _id: false },
+)
 
 const AnalysisSchema = new mongoose.Schema({
     userId: {
@@ -48,6 +48,6 @@ const AnalysisSchema = new mongoose.Schema({
 
     executionTime: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
-});
+})
 
-export default mongoose.model('Analysis', AnalysisSchema);
+export default mongoose.model('Analysis', AnalysisSchema)

@@ -1,21 +1,75 @@
-export default function (err, req, res, next) {
-    console.error('ОШИБКА:', err);
+import {
+    AppError,
+    ExternalProviderError,
+    RateLimitError,
+    UnauthorizedError,
+} from '../shared/errors.js'
 
-    if (err.message && err.message.includes('FLOOD')) {
-        return res.status(429).json({
-            message: 'Telegram просит подождать (FloodWait). Попробуйте позже.',
-        });
+function buildRequestId(req) {
+    const requestId = req.headers['x-request-id']
+    if (requestId) {
+        return String(requestId)
+    }
+    return `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function normalizeUnknownError(err) {
+    const msg = String(err?.message || '')
+
+    if (msg.includes('FLOOD')) {
+        return new RateLimitError(
+            'Telegram просит подождать (FloodWait). Попробуйте позже.',
+        )
     }
 
-    if (err.message && err.message.includes('AUTH_KEY')) {
-        return res.status(401).json({
-            message:
-                'Сессия истекла или недействительна. Авторизуйтесь заново.',
-        });
+    if (msg.includes('AUTH_KEY')) {
+        return new UnauthorizedError(
+            'Сессия истекла или недействительна. Авторизуйтесь заново.',
+        )
     }
 
-    res.status(500).json({
-        success: false,
-        message: err.message || 'Внутренняя ошибка сервера',
-    });
+    if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
+        return new ExternalProviderError('Проблема при запросе внешнего сервиса')
+    }
+
+    return new AppError(err?.message || 'Внутренняя ошибка сервера', {
+        statusCode: 500,
+        code: 'INTERNAL_ERROR',
+        isOperational: false,
+    })
+}
+
+export default function errorMiddleware(err, req, res, next) {
+    const normalizedError = err instanceof AppError ? err : normalizeUnknownError(err)
+    const requestId = buildRequestId(req)
+    const statusCode = Number(normalizedError.statusCode) || 500
+
+    if (statusCode >= 500) {
+        console.error(
+            `[error:${requestId}]`,
+            normalizedError.code,
+            normalizedError.message,
+        )
+    }
+
+    if (statusCode >= 400 && statusCode < 500) {
+        return res.status(statusCode).json({
+            status: 'fail',
+            data: {
+                code: normalizedError.code,
+                message: normalizedError.message,
+                details: normalizedError.details,
+            },
+        })
+    }
+
+    return res.status(statusCode).json({
+        status: 'error',
+        message: normalizedError.message || 'Internal server error',
+        code: normalizedError.code || 'INTERNAL_ERROR',
+        data: {
+            requestId,
+            details: normalizedError.details,
+        },
+    })
 }

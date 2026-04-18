@@ -1,3 +1,5 @@
+import { AppError, ValidationError } from '../shared/errors.js'
+
 const validate = (schema) => {
     return function validationMiddleware(req, res, next) {
         const { error, value } = schema.validate(req.body, {
@@ -10,11 +12,7 @@ const validate = (schema) => {
                 field: detail.path.join('.'),
                 message: detail.message,
             }))
-
-            return res.status(400).json({
-                message: 'Ошибка валидации данных',
-                errors,
-            })
+            return next(new ValidationError('Ошибка валидации данных', errors))
         }
 
         req.body = value
@@ -22,9 +20,15 @@ const validate = (schema) => {
             return next()
         }
 
-        return res.status(500).json({
-            message: 'Внутренняя ошибка middleware: next не является функцией',
-        })
+        return next(
+            new AppError(
+                'Внутренняя ошибка middleware: next не является функцией',
+                {
+                    statusCode: 500,
+                    code: 'MIDDLEWARE_NEXT_INVALID',
+                },
+            ),
+        )
     }
 }
 

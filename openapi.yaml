@@ -1,0 +1,202 @@
+openapi: 3.0.3
+info:
+    title: MoodScope API
+    version: 1.0.0
+    description: API for asynchronous social sentiment analysis.
+
+servers:
+    - url: /api
+      description: Main API prefix
+
+tags:
+    - name: Social
+      description: Social sentiment analysis endpoints
+
+paths:
+    /social/analyze:
+        post:
+            tags: [Social]
+            summary: Start asynchronous social analysis
+            description: Adds a heavy analysis job to BullMQ queue and immediately returns taskId.
+            security:
+                - bearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AnalyzeRequest'
+            responses:
+                '202':
+                    description: Accepted and enqueued
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AnalyzeAcceptedResponse'
+                '400':
+                    description: Validation or business fail
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                '401':
+                    description: Unauthorized
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                '500':
+                    description: Internal error
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+
+    /social/task/{taskId}:
+        get:
+            tags: [Social]
+            summary: Check analysis task status
+            security:
+                - bearerAuth: []
+            parameters:
+                - in: path
+                  name: taskId
+                  required: true
+                  schema:
+                      type: string
+            responses:
+                '200':
+                    description: Task state or completed result
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/TaskStatusResponse'
+                '404':
+                    description: Task not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                '500':
+                    description: Internal error
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+    securitySchemes:
+        bearerAuth:
+            type: http
+            scheme: bearer
+            bearerFormat: JWT
+
+    schemas:
+        AnalyzeRequest:
+            type: object
+            required:
+                - url
+            properties:
+                url:
+                    type: string
+                    format: uri
+                    example: https://t.me/some_channel/12345
+                batchSize:
+                    type: integer
+                    minimum: 10
+                    maximum: 10000
+                    example: 200
+                mode:
+                    type: string
+                    enum: [fast, deep, full]
+                    default: fast
+                phoneNumber:
+                    type: string
+                    example: '+77001234567'
+                videoFileUri:
+                    type: string
+                    format: uri
+                    example: https://storage.example.com/video.mp4
+                videoMimeType:
+                    type: string
+                    example: video/mp4
+                transcript:
+                    type: string
+                    example: This is an optional transcript.
+
+        AnalyzeAcceptedResponse:
+            type: object
+            properties:
+                status:
+                    type: string
+                    enum: [success]
+                data:
+                    type: object
+                    properties:
+                        status:
+                            type: string
+                            enum: [processing]
+                        taskId:
+                            type: string
+                        platform:
+                            type: string
+                            enum: [telegram, youtube]
+                        mode:
+                            type: string
+                            enum: [fast, deep, full]
+                        message:
+                            type: string
+
+        TaskStatusResponse:
+            type: object
+            properties:
+                status:
+                    type: string
+                    enum: [success]
+                data:
+                    type: object
+                    properties:
+                        status:
+                            type: string
+                            example: waiting
+                        taskId:
+                            type: string
+                        result:
+                            type: object
+                            nullable: true
+
+        ErrorResponse:
+            oneOf:
+                - type: object
+                  properties:
+                      status:
+                          type: string
+                          enum: [fail]
+                      data:
+                          type: object
+                          properties:
+                              code:
+                                  type: string
+                              message:
+                                  type: string
+                              details:
+                                  type: array
+                                  items:
+                                      type: object
+                                      additionalProperties: true
+                - type: object
+                  properties:
+                      status:
+                          type: string
+                          enum: [error]
+                      message:
+                          type: string
+                      code:
+                          type: string
+                      data:
+                          type: object
+                          properties:
+                              requestId:
+                                  type: string
+                              details:
+                                  nullable: true
