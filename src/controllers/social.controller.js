@@ -63,6 +63,88 @@ function normalizeTaskProgress(rawProgress, state) {
     }
 }
 
+function normalizeDateToIso(value) {
+    if (value == null || value === '') {
+        return new Date().toISOString()
+    }
+
+    if (typeof value === 'number') {
+        const ts = value < 10000000000 ? value * 1000 : value
+        const parsed = new Date(ts)
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed.toISOString()
+        }
+        return new Date().toISOString()
+    }
+
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString()
+    }
+
+    return new Date().toISOString()
+}
+
+function normalizeAnalysisResult(analysis) {
+    if (!analysis) {
+        return null
+    }
+
+    const plain = typeof analysis.toObject === 'function' ? analysis.toObject() : analysis
+    const stats = plain.stats || plain.sentiment_stats || {
+        total: 0,
+        positive: 0,
+        negative: 0,
+        neutral: 0,
+        toxic: 0,
+    }
+    const comments = Array.isArray(plain.comments)
+        ? plain.comments.map((comment, index) => {
+              const source = comment && typeof comment === 'object' ? comment : {}
+              const text = String(
+                  source.text ||
+                      source.content ||
+                      source?.snippet?.topLevelComment?.snippet?.textDisplay ||
+                      '',
+              ).trim()
+              return {
+                  ...source,
+                  comment_id: String(source.comment_id || `comment-${index}`),
+                  author_name: String(source.author_name || 'Unknown'),
+                  text,
+                  content: text,
+                  date: normalizeDateToIso(source.date),
+              }
+          })
+        : []
+
+    const aiSummarySource = plain.aiSummary && typeof plain.aiSummary === 'object'
+        ? plain.aiSummary
+        : null
+    const aiSummary = aiSummarySource
+        ? {
+              content: String(aiSummarySource.content || '').trim(),
+              keyPoints: Array.isArray(aiSummarySource.keyPoints)
+                  ? aiSummarySource.keyPoints
+                        .map((item) => String(item || '').trim())
+                        .filter(Boolean)
+                  : [],
+          }
+        : null
+    const normalizedAiSummary =
+        aiSummary && (aiSummary.content || aiSummary.keyPoints.length > 0)
+            ? aiSummary
+            : null
+
+    return {
+        ...plain,
+        stats,
+        sentiment_stats: stats,
+        comments,
+        aiSummary: normalizedAiSummary,
+    }
+}
+
 class SocialController {
     async analyzePost(req, res, next) {
         try {
@@ -164,7 +246,7 @@ class SocialController {
                     taskId: String(taskId),
                     progress: 100,
                     message: 'Анализ завершен. Результаты готовы.',
-                    result: analysis,
+                    result: normalizeAnalysisResult(analysis),
                 })
             }
 
@@ -222,7 +304,7 @@ class SocialController {
             if (!analysis) {
                 throw new NotFoundError('Анализ не найден')
             }
-            return sendSuccess(res, analysis)
+            return sendSuccess(res, normalizeAnalysisResult(analysis))
         } catch (e) {
             return next(e)
         }

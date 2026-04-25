@@ -1,5 +1,5 @@
 {
-    "name": "express-app",
+    "name": "oikui",
     "version": "1.0.0",
     "description": "Simple Express backend",
     "main": "src/index.js",

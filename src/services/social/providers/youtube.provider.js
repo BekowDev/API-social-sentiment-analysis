@@ -42,6 +42,30 @@ function extractVideoIdFromUrl(urlString) {
     return null
 }
 
+function toIsoDateString(value) {
+    if (!value) {
+        return new Date().toISOString()
+    }
+
+    if (typeof value === 'number') {
+        const ts = value < 10000000000 ? value * 1000 : value
+        return new Date(ts).toISOString()
+    }
+
+    if (value instanceof Date) {
+        return Number.isNaN(value.getTime())
+            ? new Date().toISOString()
+            : value.toISOString()
+    }
+
+    const parsed = new Date(String(value))
+    if (Number.isNaN(parsed.getTime())) {
+        return new Date().toISOString()
+    }
+
+    return parsed.toISOString()
+}
+
 class YouTubeProvider extends BaseSocialProvider {
     static platform = 'youtube'
 
@@ -367,7 +391,7 @@ class YouTubeProvider extends BaseSocialProvider {
                 pageToken = data.nextPageToken
             }
 
-            const texts = []
+            const basicComments = []
             const fullComments = []
             const threadLines = []
 
@@ -392,11 +416,6 @@ class YouTubeProvider extends BaseSocialProvider {
                         continue
                     }
 
-                    if (!includeReplies) {
-                        texts.push(rootText)
-                        continue
-                    }
-
                     let rootAuthor = 'YouTube'
                     if (top.authorDisplayName) {
                         rootAuthor = String(top.authorDisplayName)
@@ -405,17 +424,26 @@ class YouTubeProvider extends BaseSocialProvider {
                         ? String(topLevelComment.id)
                         : 'yt-root-' + i
 
-                    fullComments.push({
+                    const mappedComment = {
                         comment_id: rootCommentId,
                         author_name: rootAuthor,
                         content: rootText,
-                        date: top.publishedAt || new Date(),
+                        date: toIsoDateString(
+                            top.publishedAt || snippetItem.publishedAt,
+                        ),
                         thread: {
                             threadId: item.id ? String(item.id) : '',
                             parentId: null,
                             depth: 0,
                         },
-                    })
+                    }
+
+                    if (!includeReplies) {
+                        basicComments.push(mappedComment)
+                        continue
+                    }
+
+                    fullComments.push(mappedComment)
                     threadLines.push(
                         'Тред #' +
                             String(i + 1) +
@@ -485,17 +513,18 @@ class YouTubeProvider extends BaseSocialProvider {
                             ? String(replyItem.id)
                             : rootCommentId + '-r-' + j
 
-                        fullComments.push({
+                        const mappedComment = {
                             comment_id: replyCommentId,
                             author_name: replyAuthor,
                             content: replyText,
-                            date: replySnippet.publishedAt || new Date(),
+                            date: toIsoDateString(replySnippet.publishedAt),
                             thread: {
                                 threadId: item.id ? String(item.id) : '',
                                 parentId: rootCommentId,
                                 depth: 1,
                             },
-                        })
+                        }
+                        fullComments.push(mappedComment)
                         threadLines.push(
                             'Тред #' +
                                 String(i + 1) +
@@ -546,7 +575,7 @@ class YouTubeProvider extends BaseSocialProvider {
 
             return {
                 postContext: basicPostContext,
-                comments: texts,
+                comments: basicComments,
             }
         } catch (e) {
             console.error(

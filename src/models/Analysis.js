@@ -4,9 +4,10 @@ const CommentSchema = new mongoose.Schema(
     {
         comment_id: { type: String },
         author_name: { type: String },
+        text: { type: String },
         content: { type: String },
 
-        date: { type: Number },
+        date: { type: String },
 
         analysis: {
             sentiment: { type: String },
@@ -30,6 +31,13 @@ const AnalysisSchema = new mongoose.Schema({
     postLink: { type: String },
 
     stats: {
+        total: { type: Number, default: 0 },
+        positive: { type: Number, default: 0 },
+        negative: { type: Number, default: 0 },
+        neutral: { type: Number, default: 0 },
+        toxic: { type: Number, default: 0 },
+    },
+    sentiment_stats: {
         total: { type: Number, default: 0 },
         positive: { type: Number, default: 0 },
         negative: { type: Number, default: 0 },

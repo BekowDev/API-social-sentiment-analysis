@@ -40,6 +40,75 @@ async function updateJobProgress(job, step) {
     }
 }
 
+function normalizeDateToIso(value) {
+    if (value == null || value === '') {
+        return new Date().toISOString()
+    }
+
+    if (typeof value === 'number') {
+        const ts = value < 10000000000 ? value * 1000 : value
+        const parsed = new Date(ts)
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed.toISOString()
+        }
+        return new Date().toISOString()
+    }
+
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString()
+    }
+
+    return new Date().toISOString()
+}
+
+function normalizeCommentsForResult(comments) {
+    if (!Array.isArray(comments)) {
+        return []
+    }
+
+    return comments.map((comment, index) => {
+        const commentObject = comment && typeof comment === 'object' ? comment : {}
+        const text = String(
+            commentObject.text ||
+                commentObject.content ||
+                commentObject?.snippet?.topLevelComment?.snippet?.textDisplay ||
+                '',
+        ).trim()
+
+        return {
+            ...commentObject,
+            comment_id: String(commentObject.comment_id || `comment-${index}`),
+            author_name: String(commentObject.author_name || 'Unknown'),
+            text,
+            content: text,
+            date: normalizeDateToIso(commentObject.date),
+        }
+    })
+}
+
+function normalizeAiSummary(summary) {
+    if (!summary || typeof summary !== 'object') {
+        return null
+    }
+
+    const content = String(summary.content || '').trim()
+    const keyPoints = Array.isArray(summary.keyPoints)
+        ? summary.keyPoints
+              .map((item) => String(item || '').trim())
+              .filter(Boolean)
+        : []
+
+    if (!content && keyPoints.length === 0) {
+        return null
+    }
+
+    return {
+        content,
+        keyPoints,
+    }
+}
+
 async function runAnalysis(data, job) {
     const userId = data.userId
     const phoneNumber = data.phoneNumber
@@ -77,8 +146,9 @@ async function runAnalysis(data, job) {
 
     const normalized =
         SocialFactory.normalizeCommentsForAnalysis(commentsPayload)
-    const comments = normalized.rawComments
+    let comments = normalized.rawComments
     const youtubePostContext = normalized.youtubePostContext
+    comments = normalizeCommentsForResult(comments)
     await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.commentsFetched)
 
     let mediaForContext = postMedia
@@ -160,11 +230,12 @@ async function runAnalysis(data, job) {
         neutral,
         toxic,
     }
-    const aiSummary = await aiService.generateInsightsSummary(comments, {
+    const aiSummaryRaw = await aiService.generateInsightsSummary(comments, {
         contextSummary: postContext,
         mode: normalizedMode,
         language,
     })
+    const aiSummary = normalizeAiSummary(aiSummaryRaw)
 
     const duration = Date.now() - startTime
     await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.finalizing)
@@ -176,6 +247,7 @@ async function runAnalysis(data, job) {
         postLink: targetUrl,
         phoneNumber,
         stats,
+        sentiment_stats: stats,
         comments,
         reactions,
         executionTime: duration,
