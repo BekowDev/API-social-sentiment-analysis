@@ -12,7 +12,11 @@ const CommentSchema = new mongoose.Schema(
         analysis: {
             sentiment: { type: String },
             score: { type: Number },
+            confidence: { type: Number },
             is_toxic: { type: Boolean },
+            is_sarcastic: { type: Boolean },
+            emotion: { type: String },
+            explanation: { type: String },
             lang: { type: String },
         },
     },

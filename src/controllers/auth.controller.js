@@ -1,6 +1,8 @@
 import authService from '../services/auth.service.js';
 import User from '../models/User.js';
+import Analysis from '../models/Analysis.js';
 import emailService from '../services/email.service.js';
+import { getUserIdFromTokenPayload } from '../utils/auth-request.util.js';
 
 function generateFourDigitVerificationCode() {
     const n = Math.floor(1000 + Math.random() * 9000);
@@ -96,6 +98,27 @@ class AuthController {
             return res.json({ token });
         } catch (e) {
             res.status(401).json({ message: e.message });
+        }
+    }
+
+    async deleteMe(req, res) {
+        try {
+            const userId = getUserIdFromTokenPayload(req.user);
+            if (!userId) {
+                return res.status(401).json({ message: 'Не авторизован' });
+            }
+
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Пользователь не найден' });
+            }
+
+            await Analysis.deleteMany({ userId });
+            await User.deleteOne({ _id: userId });
+
+            return res.json({ message: 'Аккаунт удален' });
+        } catch (e) {
+            return res.status(400).json({ message: e.message });
         }
     }
 }

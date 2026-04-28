@@ -13,6 +13,7 @@ import {
     detectPlatformFromTargetUrl,
     getUserIdFromTokenPayload,
 } from '../utils/auth-request.util.js'
+import { normalizeDateToIsoOrNull } from '../utils/date.util.js'
 
 function deriveProgressMessage(progressValue, state) {
     if (typeof progressValue === 'number') {
@@ -63,28 +64,6 @@ function normalizeTaskProgress(rawProgress, state) {
     }
 }
 
-function normalizeDateToIso(value) {
-    if (value == null || value === '') {
-        return new Date().toISOString()
-    }
-
-    if (typeof value === 'number') {
-        const ts = value < 10000000000 ? value * 1000 : value
-        const parsed = new Date(ts)
-        if (!Number.isNaN(parsed.getTime())) {
-            return parsed.toISOString()
-        }
-        return new Date().toISOString()
-    }
-
-    const parsed = new Date(value)
-    if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString()
-    }
-
-    return new Date().toISOString()
-}
-
 function normalizeAnalysisResult(analysis) {
     if (!analysis) {
         return null
@@ -101,19 +80,18 @@ function normalizeAnalysisResult(analysis) {
     const comments = Array.isArray(plain.comments)
         ? plain.comments.map((comment, index) => {
               const source = comment && typeof comment === 'object' ? comment : {}
-              const text = String(
-                  source.text ||
-                      source.content ||
-                      source?.snippet?.topLevelComment?.snippet?.textDisplay ||
-                      '',
-              ).trim()
+              const rawText =
+                  source.text ??
+                  source.content ??
+                  source?.snippet?.topLevelComment?.snippet?.textDisplay
+              const text = typeof rawText === 'string' ? rawText.trim() : ''
               return {
                   ...source,
                   comment_id: String(source.comment_id || `comment-${index}`),
                   author_name: String(source.author_name || 'Unknown'),
                   text,
                   content: text,
-                  date: normalizeDateToIso(source.date),
+                  date: normalizeDateToIsoOrNull(source.date),
               }
           })
         : []
@@ -254,6 +232,10 @@ class SocialController {
             if (!job) {
                 throw new NotFoundError('Задача не найдена')
             }
+            const jobOwnerId = job?.data?.userId
+            if (!jobOwnerId || String(jobOwnerId) !== String(userId)) {
+                throw new NotFoundError('Задача не найдена')
+            }
 
             const state = await job.getState()
             const taskProgress = normalizeTaskProgress(job.progress, state)
@@ -305,6 +287,24 @@ class SocialController {
                 throw new NotFoundError('Анализ не найден')
             }
             return sendSuccess(res, normalizeAnalysisResult(analysis))
+        } catch (e) {
+            return next(e)
+        }
+    }
+
+    async clearHistory(req, res, next) {
+        try {
+            const userId = getUserIdFromTokenPayload(req.user)
+            if (!userId) {
+                throw new UnauthorizedError(
+                    'Не удалось определить пользователя по токену',
+                )
+            }
+
+            const deleteResult = await Analysis.deleteMany({ userId })
+            return sendSuccess(res, {
+                deletedCount: Number(deleteResult?.deletedCount || 0),
+            })
         } catch (e) {
             return next(e)
         }

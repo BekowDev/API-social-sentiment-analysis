@@ -4,6 +4,11 @@ const SAFE_METHOD_FALLBACKS = {
     getPostMedia: { buffer: null, mimeType: null, text: '' },
     getPostReactions: [],
 }
+const FATAL_PROVIDER_ERROR_CODES = new Set([
+    'PROVIDER_CONFIG_ERROR',
+    'PROVIDER_AUTH_ERROR',
+    'PROVIDER_INPUT_ERROR',
+])
 
 function cloneFallback(value) {
     if (Array.isArray(value)) {
@@ -59,6 +64,15 @@ class BaseSocialProvider {
                     try {
                         return await original.apply(target, args)
                     } catch (error) {
+                        if (
+                            error &&
+                            FATAL_PROVIDER_ERROR_CODES.has(
+                                String(error.code || ''),
+                            )
+                        ) {
+                            throw error
+                        }
+
                         const fallback = cloneFallback(SAFE_METHOD_FALLBACKS[prop])
                         console.error(
                             `[provider:${target.constructor?.name || 'unknown'}] method ${String(prop)} failed:`,

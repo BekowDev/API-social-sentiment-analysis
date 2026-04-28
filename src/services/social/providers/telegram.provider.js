@@ -39,11 +39,108 @@ function getAuthorName(msg) {
     return authorName
 }
 
+function getValidTelegramCommentText(message) {
+    if (!message || typeof message !== 'object') {
+        return ''
+    }
+    if (typeof message.message !== 'string') {
+        return ''
+    }
+    const text = message.message.trim()
+    return text.length > 0 ? text : ''
+}
+
+function normalizeTelegramLink(rawLink) {
+    const raw = String(rawLink || '').trim()
+    if (!raw) {
+        return ''
+    }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        return raw
+    }
+    if (raw.startsWith('t.me/') || raw.startsWith('telegram.me/')) {
+        return `https://${raw}`
+    }
+    return raw
+}
+
+function parseTelegramPostLink(postLink) {
+    const normalizedLink = normalizeTelegramLink(postLink)
+    let parsedUrl = null
+    try {
+        parsedUrl = new URL(normalizedLink)
+    } catch (error) {
+        throw new Error('Невалидная ссылка Telegram')
+    }
+
+    const hostname = String(parsedUrl.hostname || '').toLowerCase()
+    const isTelegramHost =
+        hostname === 't.me' ||
+        hostname === 'www.t.me' ||
+        hostname === 'telegram.me' ||
+        hostname === 'www.telegram.me'
+    if (!isTelegramHost) {
+        throw new Error('Ссылка не относится к Telegram')
+    }
+
+    const parts = parsedUrl.pathname
+        .split('/')
+        .map((part) => part.trim())
+        .filter(Boolean)
+
+    if (parts.length < 2) {
+        throw new Error('В ссылке отсутствует ID поста')
+    }
+
+    let channelRef = ''
+    let postIdRaw = ''
+
+    if (parts[0] === 's' && parts.length >= 3) {
+        channelRef = parts[1]
+        postIdRaw = parts[2]
+    } else if (parts[0] === 'c' && parts.length >= 3) {
+        const internalChannelId = parts[1]
+        if (!/^\d+$/.test(internalChannelId)) {
+            throw new Error('Некорректный internal channel ID в ссылке')
+        }
+        channelRef = `-100${internalChannelId}`
+        postIdRaw = parts[2]
+    } else {
+        channelRef = parts[0]
+        postIdRaw = parts[1]
+    }
+
+    const postId = Number.parseInt(postIdRaw, 10)
+    if (!Number.isInteger(postId) || postId <= 0) {
+        throw new Error('Некорректный ID поста в Telegram ссылке')
+    }
+
+    const entity =
+        typeof channelRef === 'string' &&
+        channelRef.length > 0 &&
+        !channelRef.startsWith('-')
+            ? `@${channelRef}`
+            : channelRef
+
+    return { entity, postId }
+}
+
+function createProviderConfigError(message) {
+    const error = new Error(message)
+    error.code = 'PROVIDER_CONFIG_ERROR'
+    return error
+}
+
 class TelegramProvider extends BaseSocialProvider {
     static platform = 'telegram'
 
     static canHandleUrl(url) {
-        return String(url || '').toLowerCase().indexOf('t.me') !== -1
+        try {
+            parseTelegramPostLink(url)
+            return true
+        } catch (error) {
+            return false
+        }
     }
 
     constructor(credentials = {}) {
@@ -56,14 +153,27 @@ class TelegramProvider extends BaseSocialProvider {
     getServerSessionString() {
         const raw = config.telegram.serverSession
         if (!raw || String(raw).trim().length === 0) {
-            throw new Error(
+            throw createProviderConfigError(
                 'Не задан TELEGRAM_SERVER_SESSION для серверного Telegram-аккаунта',
             )
         }
         return String(raw).trim()
     }
 
+    validateTelegramConfig() {
+        if (!Number.isInteger(this.apiId) || this.apiId <= 0) {
+            throw createProviderConfigError(
+                'Некорректный TELEGRAM_API_ID: укажите положительное целое число',
+            )
+        }
+
+        if (!this.apiHash || String(this.apiHash).trim().length === 0) {
+            throw createProviderConfigError('Не задан TELEGRAM_API_HASH')
+        }
+    }
+
     async connect() {
+        this.validateTelegramConfig()
         const sessionStr = this.getServerSessionString()
 
         if (sharedClient && sharedClient.connected) {
@@ -225,9 +335,9 @@ class TelegramProvider extends BaseSocialProvider {
     async getComments(postLink, mode = 'fast') {
         await this.connect()
         try {
-            const parts = postLink.split('/')
-            const postId = parseInt(parts[parts.length - 1])
-            const channelName = parts[parts.length - 2]
+            const parsedLink = parseTelegramPostLink(postLink)
+            const postId = parsedLink.postId
+            const channelName = parsedLink.entity
             const commentsLimit = mode === 'fast' ? 100 : undefined
 
             // Получаем сам пост
@@ -236,7 +346,9 @@ class TelegramProvider extends BaseSocialProvider {
             })
             const post = messages[0]
 
-            if (!post || !post.replies) return []
+            if (!post || !post.id) {
+                return []
+            }
 
             // 👇 ИЗМЕНЕНИЕ ЗДЕСЬ 👇
             const commentsParams = {
@@ -259,10 +371,14 @@ class TelegramProvider extends BaseSocialProvider {
             const comments = []
             for (let i = 0; i < result.length; i++) {
                 const msg = result[i]
+                const commentText = getValidTelegramCommentText(msg)
+                if (!commentText) {
+                    continue
+                }
                 const oneComment = {
                     comment_id: msg.id,
                     author_name: getAuthorName(msg),
-                    content: msg.message,
+                    content: commentText,
                     date: msg.date,
                 }
                 if (mode === 'full') {
@@ -281,9 +397,9 @@ class TelegramProvider extends BaseSocialProvider {
     async getPostReactions(postLink) {
         await this.connect()
         try {
-            const parts = postLink.split('/')
-            const postId = parseInt(parts[parts.length - 1])
-            const channelName = parts[parts.length - 2]
+            const parsedLink = parseTelegramPostLink(postLink)
+            const postId = parsedLink.postId
+            const channelName = parsedLink.entity
             const result = await this.client.getMessages(channelName, {
                 ids: [postId],
             })
@@ -316,9 +432,9 @@ class TelegramProvider extends BaseSocialProvider {
     async getPostMedia(postLink, mode = 'fast') {
         await this.connect()
         try {
-            const parts = postLink.split('/')
-            const postId = parseInt(parts[parts.length - 1])
-            const channelName = parts[parts.length - 2]
+            const parsedLink = parseTelegramPostLink(postLink)
+            const postId = parsedLink.postId
+            const channelName = parsedLink.entity
             const messages = await this.client.getMessages(channelName, {
                 ids: [postId],
             })

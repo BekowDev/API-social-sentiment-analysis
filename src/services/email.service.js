@@ -19,11 +19,6 @@ class EmailService {
         const from = process.env.SMTP_USER;
         const codeStr = String(code);
 
-        console.log('\n================ EMAIL VERIFICATION CODE ================');
-        console.log(`To: ${to}`);
-        console.log(`Код подтверждения: ${codeStr}`);
-        console.log('========================================================\n');
-
         if (!from || !process.env.SMTP_PASS) {
             console.error('[email] SMTP_USER или SMTP_PASS не заданы в окружении');
             return;

@@ -7,11 +7,11 @@ import {
 } from '../config/prompts.js'
 import { config } from '../config/index.js'
 
-const GEMINI_TEXT_MODEL = config.gemeniTextModel
-const GEMINI_MAIN_MODEL = config.gemeniModel
+const GEMINI_TEXT_MODEL = config.geminiTextModel || config.gemeniTextModel
+const GEMINI_MAIN_MODEL = config.geminiModel || config.gemeniModel
 
-const DEFAULT_BATCH_SIZE = 50
-const DEFAULT_PARALLEL_BATCHES = 3
+const DEFAULT_BATCH_SIZE = 40
+const DEFAULT_PARALLEL_BATCHES = 6
 const MAX_COMMENTS_FOR_DIRECT_ANALYSIS = 10000
 const DEFAULT_SAMPLE_LIMIT = 4000
 const DEFAULT_MAX_TOKENS_PER_BATCH = 9000
@@ -19,22 +19,37 @@ const AVG_CHARS_PER_TOKEN = 4
 
 class AIService {
     constructor() {
-        const apiKey = config.gemeniApiKey
+        const apiKey = config.geminiApiKey || config.gemeniApiKey
+        this.initError = null
+        this.genAI = null
+        this.textModel = null
+        this.multimodalModel = null
+
         if (!apiKey) {
-            throw new Error(
-                'API Key для Gemini не найден: задайте GEMINI_API_KEY в .env',
-            )
+            this.initError =
+                'API Key для Gemini не найден: задайте GEMINI_API_KEY в .env'
+        } else {
+            this.genAI = new GoogleGenerativeAI(apiKey)
+            this.textModel = this.genAI.getGenerativeModel({
+                model: GEMINI_TEXT_MODEL,
+                generationConfig: { responseMimeType: 'application/json' },
+            })
+            this.multimodalModel = this.genAI.getGenerativeModel({
+                model: GEMINI_MAIN_MODEL,
+                generationConfig: { responseMimeType: 'application/json' },
+            })
         }
-        this.genAI = new GoogleGenerativeAI(apiKey)
-        this.textModel = this.genAI.getGenerativeModel({
-            model: GEMINI_TEXT_MODEL,
-            generationConfig: { responseMimeType: 'application/json' },
-        })
-        this.multimodalModel = this.genAI.getGenerativeModel({
-            model: GEMINI_MAIN_MODEL,
-            generationConfig: { responseMimeType: 'application/json' },
-        })
         this.lastAggregateInsight = null
+    }
+
+    ensureReady() {
+        if (!this.initError) {
+            return
+        }
+
+        const error = new Error(this.initError)
+        error.code = 'PROVIDER_CONFIG_ERROR'
+        throw error
     }
 
     parseJsonFromModelResponse(rawText) {
@@ -48,6 +63,20 @@ class AIService {
             cleanText = cleanText.trim()
             return JSON.parse(cleanText)
         } catch (error) {
+            const raw = String(rawText || '')
+            const compact = raw.replace(/\s+/g, ' ').trim()
+            const preview =
+                compact.length > 240
+                    ? compact.slice(0, 240) + ' ...[truncated]'
+                    : compact
+            console.warn(
+                'Gemini JSON parse failed:',
+                error?.message || 'Unknown parse error',
+                '| length:',
+                raw.length,
+                '| preview:',
+                preview,
+            )
             return null
         }
     }
@@ -105,6 +134,7 @@ class AIService {
     }
 
     async getPostContextSummary(postMedia = {}) {
+        this.ensureReady()
         try {
             const hasVideo = Boolean(
                 postMedia.videoFileUri || postMedia.videoBuffer,
@@ -149,8 +179,17 @@ class AIService {
     }
 
     estimateCommentTokens(comment) {
-        const text = this.buildCommentText(comment?.content || '')
+        const text = this.buildCommentText(this.extractCommentContent(comment))
         return this.estimateTokens(text) + 12
+    }
+
+    extractCommentContent(comment) {
+        if (!comment || typeof comment !== 'object') {
+            return ''
+        }
+
+        const rawText = comment.content ?? comment.text
+        return typeof rawText === 'string' ? rawText.trim() : ''
     }
 
     truncateCommentForPrompt(text, maxTokens = 700) {
@@ -169,7 +208,7 @@ class AIService {
         }
 
         const scored = source.map((item) => {
-            const text = String(item?.comment?.content || '')
+            const text = this.extractCommentContent(item?.comment)
             let score = text.length
             if (/[!?]/.test(text)) {
                 score += 40
@@ -247,6 +286,7 @@ class AIService {
         return {
             sentiment: 'neutral',
             score: 0.5,
+            confidence: 50,
             is_toxic: false,
             is_sarcastic: false,
             emotion: 'neutral',
@@ -330,6 +370,7 @@ class AIService {
     }
 
     async generateInsightsSummary(analyzedComments, options = {}) {
+        this.ensureReady()
         const language = String(options.language || 'ru').toLowerCase()
         const safeComments = Array.isArray(analyzedComments) ? analyzedComments : []
         if (safeComments.length === 0) {
@@ -337,7 +378,7 @@ class AIService {
         }
 
         const compactRows = safeComments.map((row) => ({
-            content: String(row?.content || ''),
+            content: this.extractCommentContent(row),
             sentiment: String(row?.analysis?.sentiment || 'neutral'),
             score:
                 typeof row?.analysis?.score === 'number'
@@ -421,6 +462,7 @@ class AIService {
     }
 
     async reduceBatchSummaries(partialSummaries, options = {}) {
+        this.ensureReady()
         if (!Array.isArray(partialSummaries) || partialSummaries.length === 0) {
             return null
         }
@@ -460,9 +502,23 @@ class AIService {
         if (!row || typeof row !== 'object') {
             return this.getNeutralFallbackResult()
         }
+        const confidenceRaw = Number(row.confidence)
+        const normalizedConfidence = Number.isFinite(confidenceRaw)
+            ? Math.max(0, Math.min(100, confidenceRaw))
+            : null
+        const normalizedScore =
+            normalizedConfidence !== null
+                ? normalizedConfidence / 100
+                : typeof row.score === 'number'
+                  ? Math.max(0, Math.min(1, row.score))
+                  : 0.5
         return {
             sentiment: row.sentiment || 'neutral',
-            score: typeof row.score === 'number' ? row.score : 0.5,
+            score: normalizedScore,
+            confidence:
+                normalizedConfidence !== null
+                    ? normalizedConfidence
+                    : Math.round(normalizedScore * 100),
             is_toxic: Boolean(row.is_toxic),
             is_sarcastic: Boolean(row.is_sarcastic),
             emotion: row.emotion || 'neutral',
@@ -474,33 +530,63 @@ class AIService {
         }
     }
 
+    normalizeLightweightBatchResultRow(row) {
+        if (!row || typeof row !== 'object') {
+            return this.getNeutralFallbackResult()
+        }
+        const sentimentValue = String(row.sentiment || '').toLowerCase()
+        const sentiment =
+            sentimentValue === 'positive' ||
+            sentimentValue === 'negative' ||
+            sentimentValue === 'neutral'
+                ? sentimentValue
+                : 'neutral'
+        const confidenceRaw = Number(row.confidence)
+        const confidence = Number.isFinite(confidenceRaw)
+            ? Math.max(0, Math.min(100, confidenceRaw))
+            : 50
+        return {
+            sentiment,
+            score: confidence / 100,
+            confidence,
+            is_toxic: Boolean(row.is_toxic),
+            is_sarcastic: false,
+            emotion: 'neutral',
+            themes: [],
+            hidden_meaning: '',
+            explanation: '',
+        }
+    }
+
     async analyzeBatch(commentsBatch, options = {}) {
+        this.ensureReady()
         const safeBatch = Array.isArray(commentsBatch) ? commentsBatch : []
         if (safeBatch.length === 0) {
             return []
         }
 
         try {
-            let lines = ''
-            let localIndex = 1
+            const preparedRows = []
             for (let i = 0; i < safeBatch.length; i++) {
                 const item = safeBatch[i]?.comment || {}
-                let text = String(item.content || '').trim()
+                let text = this.extractCommentContent(item)
                 if (text.length === 0) {
                     text = '(пустой комментарий)'
                 } else {
                     text = this.buildCommentText(text)
                 }
                 text = this.truncateCommentForPrompt(text)
-                lines += String(localIndex) + '. ' + text + '\n'
-                localIndex += 1
+                preparedRows.push({
+                    id: String(safeBatch[i]?.originIndex ?? i),
+                    text,
+                })
             }
 
             const batchCount = safeBatch.length
             const prompt = buildCommentsBatchPrompt({
                 mode: options.mode || 'fast',
                 contextSummary: options.contextSummary || '',
-                lines,
+                commentsJson: JSON.stringify(preparedRows),
                 batchCount,
                 batchIndex: options.batchIndex || 0,
                 totalBatches: options.totalBatches || 1,
@@ -514,9 +600,21 @@ class AIService {
             )
 
             if (Array.isArray(parsed) && parsed.length > 0) {
+                const byId = new Map()
+                for (let i = 0; i < parsed.length; i++) {
+                    const row = parsed[i]
+                    const id = String(row?.id || '')
+                    if (!id) {
+                        continue
+                    }
+                    byId.set(id, this.normalizeLightweightBatchResultRow(row))
+                }
                 const normalized = []
-                for (let i = 0; i < batchCount; i++) {
-                    normalized.push(this.normalizeAiResultRow(parsed[i]))
+                for (let i = 0; i < preparedRows.length; i++) {
+                    const row = preparedRows[i]
+                    normalized.push(
+                        byId.get(row.id) || this.getNeutralFallbackResult(),
+                    )
                 }
                 return normalized
             }

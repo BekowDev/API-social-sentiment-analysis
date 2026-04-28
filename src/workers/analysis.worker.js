@@ -5,6 +5,7 @@ import SocialFactory from '../services/social/social.factory.js'
 import aiService from '../services/ai.service.js'
 import { ANALYSIS_QUEUE_NAME } from '../services/queue.service.js'
 import { detectPlatformFromTargetUrl } from '../utils/auth-request.util.js'
+import { normalizeDateToIsoOrNull } from '../utils/date.util.js'
 
 const ANALYSIS_PROGRESS_STEPS = {
     start: {
@@ -40,28 +41,6 @@ async function updateJobProgress(job, step) {
     }
 }
 
-function normalizeDateToIso(value) {
-    if (value == null || value === '') {
-        return new Date().toISOString()
-    }
-
-    if (typeof value === 'number') {
-        const ts = value < 10000000000 ? value * 1000 : value
-        const parsed = new Date(ts)
-        if (!Number.isNaN(parsed.getTime())) {
-            return parsed.toISOString()
-        }
-        return new Date().toISOString()
-    }
-
-    const parsed = new Date(value)
-    if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString()
-    }
-
-    return new Date().toISOString()
-}
-
 function normalizeCommentsForResult(comments) {
     if (!Array.isArray(comments)) {
         return []
@@ -69,12 +48,11 @@ function normalizeCommentsForResult(comments) {
 
     return comments.map((comment, index) => {
         const commentObject = comment && typeof comment === 'object' ? comment : {}
-        const text = String(
-            commentObject.text ||
-                commentObject.content ||
-                commentObject?.snippet?.topLevelComment?.snippet?.textDisplay ||
-                '',
-        ).trim()
+        const rawText =
+            commentObject.text ??
+            commentObject.content ??
+            commentObject?.snippet?.topLevelComment?.snippet?.textDisplay
+        const text = typeof rawText === 'string' ? rawText.trim() : ''
 
         return {
             ...commentObject,
@@ -82,8 +60,18 @@ function normalizeCommentsForResult(comments) {
             author_name: String(commentObject.author_name || 'Unknown'),
             text,
             content: text,
-            date: normalizeDateToIso(commentObject.date),
+            date: normalizeDateToIsoOrNull(commentObject.date),
         }
+    })
+}
+
+function filterValidComments(comments) {
+    if (!Array.isArray(comments)) {
+        return []
+    }
+    return comments.filter((comment) => {
+        const text = comment?.content
+        return typeof text === 'string' && text.trim().length > 0
     })
 }
 
@@ -116,7 +104,7 @@ async function runAnalysis(data, job) {
     const mode = data.mode
     const language = data.language
     const taskId = data.taskId
-    const batchSize = Number(data.batchSize) || 50
+    const batchSize = Number(data.batchSize) || 40
     const startTime = Date.now()
     const targetUrl = postLink || ''
 
@@ -149,6 +137,7 @@ async function runAnalysis(data, job) {
     let comments = normalized.rawComments
     const youtubePostContext = normalized.youtubePostContext
     comments = normalizeCommentsForResult(comments)
+    comments = filterValidComments(comments)
     await updateJobProgress(job, ANALYSIS_PROGRESS_STEPS.commentsFetched)
 
     let mediaForContext = postMedia
@@ -185,6 +174,13 @@ async function runAnalysis(data, job) {
             comments[i].analysis = {
                 sentiment: ai.sentiment || 'neutral',
                 score: typeof ai.score === 'number' ? ai.score : 0.5,
+                confidence:
+                    typeof ai.confidence === 'number'
+                        ? ai.confidence
+                        : Math.round(
+                              (typeof ai.score === 'number' ? ai.score : 0.5) *
+                                  100,
+                          ),
                 is_toxic: Boolean(ai.is_toxic),
                 is_sarcastic: Boolean(ai.is_sarcastic),
                 emotion: ai.emotion || 'neutral',
@@ -194,6 +190,7 @@ async function runAnalysis(data, job) {
             comments[i].analysis = {
                 sentiment: 'neutral',
                 score: 0.5,
+                confidence: 50,
                 is_toxic: false,
                 is_sarcastic: false,
                 emotion: 'neutral',

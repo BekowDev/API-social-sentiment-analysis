@@ -70,6 +70,18 @@ class SocialFactory {
         return null
     }
 
+    static detectPlatformByLink(postLink = '') {
+        const ProviderClass = this.detectProviderClassByLink(postLink)
+        if (!ProviderClass) {
+            return null
+        }
+
+        const platform = String(ProviderClass.platform || '')
+            .trim()
+            .toLowerCase()
+        return platform || null
+    }
+
     static getProvider(platform, credentials = {}, postLink = '') {
         const cleanPlatform = String(platform || '')
             .toLowerCase()
@@ -112,7 +124,7 @@ class SocialFactory {
                 let commentId = 'yt-' + i
                 let authorName = 'YouTube'
                 let content = ''
-                let dateValue = new Date()
+                let dateValue = null
                 let mediaValue = null
                 let threadValue = null
 
@@ -123,7 +135,10 @@ class SocialFactory {
                     authorName = String(item.author_name)
                 }
                 if (item.content) {
-                    content = String(item.content)
+                    content =
+                        typeof item.content === 'string'
+                            ? item.content.trim()
+                            : ''
                 }
                 if (item.date) {
                     dateValue = item.date
@@ -147,8 +162,8 @@ class SocialFactory {
                 rawComments.push({
                     comment_id: 'yt-' + i,
                     author_name: 'YouTube',
-                    content: String(item),
-                    date: new Date(),
+                    content: typeof item === 'string' ? item.trim() : '',
+                    date: null,
                 })
             }
         }

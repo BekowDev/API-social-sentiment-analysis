@@ -51,11 +51,9 @@ class AdminController {
             const candidate = await User.findOne({ email })
             if (candidate)
                 return res.status(400).json({ message: 'Email занят' })
-
-            const hashedPassword = await bcrypt.hash(password, 7)
             const user = await User.create({
                 email,
-                password: hashedPassword,
+                password,
                 role,
             })
 

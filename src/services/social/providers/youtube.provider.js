@@ -1,69 +1,129 @@
 import BaseSocialProvider from '../base.provider.js'
 import axios from 'axios'
 import proxyManager from '../../../shared/proxy.manager.js'
+import { normalizeDateToIsoOrNull } from '../../../utils/date.util.js'
 
 /**
  * Достаёт id ролика из обычной ссылки YouTube.
- * Поддерживаются: youtube.com/watch?v=... и youtu.be/...
+ * Поддерживаются:
+ * - youtube.com/watch?v=...
+ * - youtu.be/...
+ * - youtube.com/shorts/...
+ * - youtube.com/live/...
+ * - youtube.com/embed/...
  */
+function normalizeYouTubeLink(urlString) {
+    const raw = String(urlString || '').trim()
+    if (!raw) {
+        return ''
+    }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        return raw
+    }
+    if (
+        raw.startsWith('youtube.com/') ||
+        raw.startsWith('www.youtube.com/') ||
+        raw.startsWith('m.youtube.com/') ||
+        raw.startsWith('youtu.be/') ||
+        raw.startsWith('www.youtu.be/')
+    ) {
+        return `https://${raw}`
+    }
+    return raw
+}
+
+function normalizeCandidateId(value) {
+    const candidate = String(value || '').trim()
+    if (/^[A-Za-z0-9_-]{11}$/.test(candidate)) {
+        return candidate
+    }
+    return null
+}
+
 function extractVideoIdFromUrl(urlString) {
     if (!urlString || typeof urlString !== 'string') {
         return null
     }
 
-    const url = urlString.trim()
+    const normalized = normalizeYouTubeLink(urlString)
 
-    if (url.indexOf('youtu.be/') !== -1) {
-        const start = url.indexOf('youtu.be/') + 'youtu.be/'.length
-        let id = url.slice(start)
-        const q = id.indexOf('?')
-        const sl = id.indexOf('/')
-        let end = id.length
-        if (q !== -1) {
-            end = Math.min(end, q)
+    try {
+        const parsed = new URL(normalized)
+        const host = String(parsed.hostname || '').toLowerCase()
+        const pathSegments = parsed.pathname
+            .split('/')
+            .map((segment) => segment.trim())
+            .filter(Boolean)
+
+        const isYouTubeHost =
+            host === 'youtube.com' ||
+            host === 'www.youtube.com' ||
+            host === 'm.youtube.com'
+        const isShortHost = host === 'youtu.be' || host === 'www.youtu.be'
+
+        if (isShortHost) {
+            return normalizeCandidateId(pathSegments[0])
         }
-        if (sl !== -1) {
-            end = Math.min(end, sl)
+
+        if (isYouTubeHost) {
+            const watchId = normalizeCandidateId(parsed.searchParams.get('v'))
+            if (watchId) {
+                return watchId
+            }
+
+            const first = pathSegments[0]
+            const second = pathSegments[1]
+            if (
+                (first === 'shorts' || first === 'live' || first === 'embed') &&
+                second
+            ) {
+                return normalizeCandidateId(second)
+            }
         }
-        id = id.slice(0, end)
-        if (id.length > 0) {
-            return id
-        }
-        return null
+    } catch (error) {
+        // fallback to regex-based parse below
     }
 
-    if (url.indexOf('youtube.com') !== -1) {
-        const match = url.match(/[?&]v=([^&]+)/)
+    const patterns = [
+        /(?:youtube\.com\/watch\?[^#\n]*\bv=)([A-Za-z0-9_-]{11})/i,
+        /(?:youtu\.be\/)([A-Za-z0-9_-]{11})/i,
+        /(?:youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/i,
+        /(?:youtube\.com\/live\/)([A-Za-z0-9_-]{11})/i,
+        /(?:youtube\.com\/embed\/)([A-Za-z0-9_-]{11})/i,
+    ]
+
+    for (let i = 0; i < patterns.length; i++) {
+        const match = normalized.match(patterns[i])
         if (match && match[1]) {
-            return match[1]
+            return normalizeCandidateId(match[1])
         }
     }
 
     return null
 }
 
-function toIsoDateString(value) {
-    if (!value) {
-        return new Date().toISOString()
-    }
+function createProviderConfigError(message) {
+    const error = new Error(message)
+    error.code = 'PROVIDER_CONFIG_ERROR'
+    return error
+}
 
-    if (typeof value === 'number') {
-        const ts = value < 10000000000 ? value * 1000 : value
-        return new Date(ts).toISOString()
-    }
+function createProviderInputError(message) {
+    const error = new Error(message)
+    error.code = 'PROVIDER_INPUT_ERROR'
+    return error
+}
 
-    if (value instanceof Date) {
-        return Number.isNaN(value.getTime())
-            ? new Date().toISOString()
-            : value.toISOString()
-    }
-
-    const parsed = new Date(String(value))
-    if (Number.isNaN(parsed.getTime())) {
-        return new Date().toISOString()
-    }
-
-    return parsed.toISOString()
+function isApiKeyRejected(status, errorText) {
+    const normalizedText = String(errorText || '').toLowerCase()
+    const isAuthStatus = status === 400 || status === 401 || status === 403
+    return (
+        isAuthStatus &&
+        (normalizedText.includes('api key') ||
+            normalizedText.includes('key') ||
+            normalizedText.includes('credential') ||
+            normalizedText.includes('access not configured'))
+    )
 }
 
 class YouTubeProvider extends BaseSocialProvider {
@@ -119,6 +179,11 @@ class YouTubeProvider extends BaseSocialProvider {
 
         const response = await this.requestJson(requestUrl)
         if (!response.ok) {
+            if (isApiKeyRejected(response.status, response.errorText)) {
+                throw createProviderConfigError(
+                    'Некорректный YOUTUBE_API_KEY или доступ к YouTube Data API не настроен',
+                )
+            }
             console.error(
                 'YouTube videos.list ошибка:',
                 response.status,
@@ -301,19 +366,16 @@ class YouTubeProvider extends BaseSocialProvider {
 
         const videoId = extractVideoIdFromUrl(url)
         if (!videoId) {
-            return {
-                postContext: 'Анализ комментариев YouTube видео',
-                comments: [],
-            }
+            throw createProviderInputError(
+                'Не удалось извлечь videoId из YouTube ссылки. Используйте ссылку на конкретное видео',
+            )
         }
 
         const apiKey = process.env.YOUTUBE_API_KEY
         if (!apiKey) {
-            console.error('YouTube: в .env не задан YOUTUBE_API_KEY')
-            return {
-                postContext: 'Анализ комментариев YouTube видео',
-                comments: [],
-            }
+            throw createProviderConfigError(
+                'YouTube: в .env не задан YOUTUBE_API_KEY',
+            )
         }
 
         let title = ''
@@ -361,6 +423,11 @@ class YouTubeProvider extends BaseSocialProvider {
 
                 const response = await this.requestJson(requestUrl)
                 if (!response.ok) {
+                    if (isApiKeyRejected(response.status, response.errorText)) {
+                        throw createProviderConfigError(
+                            'YouTube API отклонил ключ доступа (YOUTUBE_API_KEY)',
+                        )
+                    }
                     console.error(
                         'YouTube API ошибка:',
                         response.status,
@@ -428,7 +495,7 @@ class YouTubeProvider extends BaseSocialProvider {
                         comment_id: rootCommentId,
                         author_name: rootAuthor,
                         content: rootText,
-                        date: toIsoDateString(
+                        date: normalizeDateToIsoOrNull(
                             top.publishedAt || snippetItem.publishedAt,
                         ),
                         thread: {
@@ -517,7 +584,9 @@ class YouTubeProvider extends BaseSocialProvider {
                             comment_id: replyCommentId,
                             author_name: replyAuthor,
                             content: replyText,
-                            date: toIsoDateString(replySnippet.publishedAt),
+                            date: normalizeDateToIsoOrNull(
+                                replySnippet.publishedAt,
+                            ),
                             thread: {
                                 threadId: item.id ? String(item.id) : '',
                                 parentId: rootCommentId,
@@ -578,6 +647,9 @@ class YouTubeProvider extends BaseSocialProvider {
                 comments: basicComments,
             }
         } catch (e) {
+            if (e && e.code === 'PROVIDER_CONFIG_ERROR') {
+                throw e
+            }
             console.error(
                 'YouTube: не удалось загрузить комментарии:',
                 e.message,

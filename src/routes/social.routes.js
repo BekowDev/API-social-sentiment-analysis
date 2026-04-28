@@ -13,5 +13,6 @@ router.get('/task/:taskId', socialController.getTaskStatus)
 router.get('/tasks/:taskId', socialController.getTaskStatus)
 router.get('/history', socialController.getHistory)
 router.get('/history/:id', socialController.getAnalysisById)
+router.delete('/history', socialController.clearHistory)
 
 export default router

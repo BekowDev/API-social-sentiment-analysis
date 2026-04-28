@@ -6,6 +6,7 @@ import {
     loginSchema,
     verifyCodeSchema,
 } from '../validations/auth.validation.js';
+import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const router = new Router();
 
@@ -16,5 +17,6 @@ router.post(
     validate(verifyCodeSchema),
     authController.verifyCode
 );
+router.delete('/me', authMiddleware, authController.deleteMe);
 
 export default router;

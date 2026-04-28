@@ -69,7 +69,7 @@ export function buildContextSummaryInstruction(options = {}) {
 export function buildCommentsBatchPrompt(options = {}) {
     const mode = normalizeMode(options.mode)
     const contextSummary = String(options.contextSummary || '')
-    const lines = String(options.lines || '')
+    const commentsJson = String(options.commentsJson || '[]')
     const batchCount = Number(options.batchCount) || 0
     const batchIndex = Number(options.batchIndex || 0)
     const totalBatches = Number(options.totalBatches || 1)
@@ -96,6 +96,7 @@ export function buildCommentsBatchPrompt(options = {}) {
 
     return [
         'You are an expert analyst of social media comments (Telegram, YouTube).',
+        'Respond with STRICT JSON only.',
         `Mode: ${mode.toUpperCase()}.`,
         `Batch ${batchIndex + 1} of ${totalBatches}.`,
         '',
@@ -107,22 +108,22 @@ export function buildCommentsBatchPrompt(options = {}) {
         ...contextHints,
         `- ${responseNote}`,
         '',
-        `Input data (exactly ${batchCount} comments, preserve order):`,
-        lines,
+        `Input data (exactly ${batchCount} comments, preserve all ids):`,
+        commentsJson,
         '',
-        `Return STRICT JSON array with exactly ${batchCount} objects in the same order:`,
+        `Return STRICT JSON array with exactly ${batchCount} objects. NO markdown, NO extra text:`,
         '[',
         '  {',
+        '    "id": "same id from input",',
         '    "sentiment": "positive|negative|neutral",',
-        '    "score": 0.0,',
-        '    "is_toxic": false,',
-        '    "is_sarcastic": false,',
-        '    "emotion": "joy|anger|sadness|admiration|neutral",',
-        '    "themes": ["theme1", "theme2"],',
-        '    "hidden_meaning": "",',
-        '    "explanation": "short reason"',
+        '    "confidence": 0',
         '  }',
         ']',
+        'Constraints:',
+        '- Use only ids from input.',
+        '- confidence MUST be a number from 0 to 100 and reflect your real certainty.',
+        '- Do not use fixed confidence values by sentiment; evaluate each comment independently.',
+        '- Do not include any fields except id, sentiment, confidence.',
     ].join('\n')
 }
 
